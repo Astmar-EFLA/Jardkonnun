@@ -264,6 +264,16 @@
   <div class="row">
     <button class="btn btn-ghost" id="gh-reset-cache">🗑 Hreinsa staðbundna geymslu</button>
   </div>
+  <h2 style="margin-top:22px">Microsoft / SharePoint <span class="badge" id="sp-badge">á döfinni</span></h2>
+  <div class="hint" id="sp-hint">Nýja gagnageymslan (SharePoint-listi í stað CSV, myndir í SharePoint í stað Cloudinary). Óvirkt þangað til Client ID/Tenant ID frá IT er komið inn í kóðann.</div>
+  <div class="row" style="margin-top:10px">
+    <button class="btn btn-ghost" id="sp-signin">Skrá inn með Microsoft</button>
+    <button class="btn btn-ghost" id="sp-signout" style="display:none">Skrá út</button>
+  </div>
+  <div class="row" id="sp-provision-row" style="display:none">
+    <button class="btn btn-ghost" id="sp-provision">Búa til/staðfesta lista á SharePoint</button>
+  </div>
+  <div class="hint" id="sp-status" style="margin-top:8px"></div>
 </dialog>
 
 <div class="toast" id="toast"></div>
@@ -272,6 +282,7 @@
 <script src="https://cdn.jsdelivr.net/npm/proj4@2.9.2/dist/proj4.js"></script>
 <script src="https://unpkg.com/shpjs@4.0.4/dist/shp.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://unpkg.com/@azure/msal-browser@5.23.0/lib/msal-browser.min.js"></script>
 <script>
 "use strict";
 /* ============================================================
@@ -1159,6 +1170,242 @@ function uploadOnePhotoCloudinary(ph){
     .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
     .then(function(data){ return data.secure_url; });
 }
+/* ============================================================
+   Microsoft / SharePoint (nýja gagnageymslan - í smíðum)
+   Kemur í stað CSV-á-GitHub fyrir gögn og Cloudinary fyrir myndir.
+   Óvirkt þar til MSAL_CLIENT_ID/MSAL_TENANT_ID frá IT eru sett inn hér.
+   ============================================================ */
+var MSAL_CLIENT_ID='';   // TODO: fylla út þegar IT svarar (Application/client ID)
+var MSAL_TENANT_ID='';   // TODO: fylla út þegar IT svarar (Directory/tenant ID)
+var SP_SITE_HOSTNAME='efla.sharepoint.com';
+var SP_SITE_PATH='/sites/JardkonnunEFLA';
+var SP_LIST_NAME='Jardkonnun2026';
+var SP_PHOTO_FOLDER='myndir';
+var GRAPH_SCOPES=['Sites.ReadWrite.All'];
+var GRAPH_BASE='https://graph.microsoft.com/v1.0';
+
+function spConfigured(){ return !!(MSAL_CLIENT_ID && MSAL_TENANT_ID); }
+
+/* Dálkaskema fyrir SharePoint-listann - endurspeglar núverandi CSV-dálka.
+   n=innra heiti (ASCII, stöðugt), d=birt heiti, t=tegund, choices/fillIn
+   fyrir choice-dálka. Notað bæði til að búa til listann og til að flétta
+   svörum úr Graph API aftur inn í sama points/fields-líkan og CSV notaði. */
+var SP_SCHEMA=[
+  {n:'Nr',d:'Nr.',t:'text'},
+  {n:'Nafn',d:'Nafn',t:'text'},
+  {n:'Gerd',d:'Gerð',t:'text'},
+  {n:'NG',d:'NG',t:'text'},
+  {n:'X',d:'X',t:'number'},
+  {n:'Y',d:'Y',t:'number'},
+  {n:'Z',d:'Z',t:'number'},
+  {n:'H',d:'H',t:'number'},
+  {n:'Lengd',d:'Lengd',t:'number'},
+  {n:'Horn',d:'Horn',t:'number'},
+  {n:'KKS',d:'Línuheiti/KKS',t:'choice',choices:['BLA3','HH3','HH3_BG'],fillIn:true},
+  {n:'UnnidAf',d:'Unnið af',t:'text'},
+  {n:'Dagsetning',d:'Dagsetning',t:'date'},
+  {n:'Timi',d:'tími',t:'text'},
+  {n:'Ljosmynd',d:'Ljósmynd',t:'note'},
+  {n:'AlmennLysing',d:'ALmenn lýsing á Jarðvegsaðstæðum',t:'note'},
+  {n:'SerstakAthugun',d:'Til sérstakrar athugunar',t:'note'},
+  {n:'Stagfestugerd',d:'Stagfestugerð',t:'text'},
+  {n:'JardvegsmatFramkvaemt',d:'Er jarðvegsmat framkvæmt?',t:'choice',choices:['Já','Nei']},
+  {n:'GaediMats',d:'Gæði mats (1:borað, 2:pjakkað, 3:metið á staðnum) (V-H-A-F)',t:'text'},
+  {n:'DypiJardvatn',d:'Dýpi á jarðvatn [m] (V-H-A-F)',t:'text'},
+  {n:'ThykktLifraent',d:'Þykkt á lífrænu lagi [m] (V-H-A-F)',t:'text'},
+  {n:'DypiBurdarhaeft',d:'Dýpi á burðarhæft [m] (V-H-A-F)',t:'text'},
+  {n:'DypiFast',d:'Dýpi á fast [m] (V-H-A-F)',t:'text'},
+  {n:'LifraentEfni',d:'Lífrænt efni (V-H-A-F)',t:'text'},
+  {n:'YfirBurdarhaefu',d:'Yfir burðarhæfu (V-H-A-F)',t:'text'},
+  {n:'BurdarhaeftEfni',d:'Burðarhæft efni (V-H-A-F)',t:'text'},
+  {n:'Klopp',d:'Klöpp (V-H-A-F)',t:'text'},
+  {n:'MasturssaediILagi',d:'Mastursstæði er í lagi, ekki þörf á breytingu',t:'choice',choices:['Já','Nei']},
+  {n:'NaegjanlegtPlass',d:'Er Nægjanlegt pláss fyrir mastrið, undirstöður, stagfestur og annan búnað?',t:'choice',choices:['Já','Nei']},
+  {n:'AdstaedurFullnaegjandi',d:'Eru aðstæður fullnægjandi (fen, skurður, lækjarfarvegur o.s.frv.)?',t:'choice',choices:['Já','Nei']},
+  {n:'UtanHaettusvaedis',d:'Er mastrið utan hættusvæðis vegna landsbrots, skriðufalla, snjóflóða o.s.frv.?',t:'choice',choices:['Já','Nei']},
+  {n:'UtanTuns',d:'Er mastrið utan við tún eða aðra viðkvæma staði?',t:'choice',choices:['Já','Nei']},
+  {n:'SnjosofnunOlikleg',d:'Er staðbundin snjósöfnun í mastursstæði ólíkleg?',t:'choice',choices:['Já','Nei']},
+  {n:'HoflegurHlidarhalli',d:'Er hóflegur hliðarhalli í mastursstæði?',t:'choice',choices:['Já','Nei']},
+  {n:'SerstakarRadstafanir',d:'Er þörf á sérstökum ráðstöfunum í mastursstæði? Ef þörf, þá hver?',t:'text'},
+  {n:'BetriMedHlidrun',d:'Eru aðstæður í mastursstæði betri ef mastri er hliðrað til?',t:'choice',choices:['Já','Nei']},
+  {n:'FaerslaNaestuMostur',d:'Leiðir færsla á mastri til þess að færa þurfi næstu möstur?',t:'choice',choices:['Já','Nei']},
+  {n:'GodAdkoma',d:'Er góð aðkoma að mastursstæði',t:'choice',choices:['Já','Nei']},
+  {n:'ThorfAdkomuslod',d:'Er þörf á aðkomuslóð (ef ekki, þá hvers vegna?)',t:'text'},
+  {n:'ThorfSlodJardvinnutaeki',d:'Er þörf á slóð fyrir jarðvinnutæki?',t:'choice',choices:['Já','Nei']},
+  {n:'ThorfReisingarplan',d:'Er þörf á reisingarplani fyrir krana?',t:'choice',choices:['Já','Nei']},
+  {n:'TeiknadAdkomuslod',d:'Búið að teikna aðkomuslóð a mynd?',t:'choice',choices:['Já','Nei']},
+  {n:'UppfyllirKrofur',d:'Uppfyllir mastursstæði kröfur reglugerða um fjarlægð frá vegum og öðrum mannvirkjum?',t:'choice',choices:['Já','Nei']},
+  {n:'SkraningLokid',d:'Skráning lokið',t:'bool'}
+];
+function spTypeToColumnDef(f){
+  switch(f.t){
+    case 'number': return {name:f.n,displayName:f.d,number:{decimalPlaces:'automatic'}};
+    case 'choice': return {name:f.n,displayName:f.d,choice:{choices:f.choices,displayAs:'dropDownMenu',allowTextEntry:!!f.fillIn}};
+    case 'date': return {name:f.n,displayName:f.d,dateTime:{displayAs:'default',format:'dateOnly'}};
+    case 'note': return {name:f.n,displayName:f.d,text:{allowMultipleLines:true}};
+    case 'bool': return {name:f.n,displayName:f.d,boolean:{}};
+    default: return {name:f.n,displayName:f.d,text:{}};
+  }
+}
+
+/* ---------- MSAL: innskráning ---------- */
+var msalInstance=null, msalAccount=null;
+function initMsal(){
+  if(!spConfigured() || typeof msal==='undefined') return;
+  msalInstance=new msal.PublicClientApplication({
+    auth:{
+      clientId:MSAL_CLIENT_ID,
+      authority:'https://login.microsoftonline.com/'+MSAL_TENANT_ID,
+      redirectUri:window.location.origin+window.location.pathname
+    },
+    cache:{cacheLocation:'localStorage'}
+  });
+  msalInstance.initialize().then(function(){
+    return msalInstance.handleRedirectPromise();
+  }).then(function(){
+    var accounts=msalInstance.getAllAccounts();
+    if(accounts.length){ msalAccount=accounts[0]; msalInstance.setActiveAccount(msalAccount); }
+    updateSpUi();
+  }).catch(function(err){ console.warn('MSAL frumstilling:',err); });
+}
+function msSignIn(){
+  if(!msalInstance) return Promise.reject(new Error('MSAL ekki frumstillt'));
+  return msalInstance.loginPopup({scopes:GRAPH_SCOPES}).then(function(res){
+    msalAccount=res.account;
+    msalInstance.setActiveAccount(msalAccount);
+    updateSpUi();
+    return res;
+  });
+}
+function msSignOut(){
+  if(!msalInstance||!msalAccount) return Promise.resolve();
+  return msalInstance.logoutPopup({account:msalAccount}).then(function(){
+    msalAccount=null;
+    updateSpUi();
+  });
+}
+function msGetToken(){
+  if(!msalInstance||!msalAccount) return Promise.reject(new Error('Ekki innskráð/ur með Microsoft'));
+  return msalInstance.acquireTokenSilent({scopes:GRAPH_SCOPES,account:msalAccount})
+    .catch(function(){ return msalInstance.acquireTokenPopup({scopes:GRAPH_SCOPES}); })
+    .then(function(res){ return res.accessToken; });
+}
+function updateSpUi(){
+  var badge=$('#sp-badge'), hint=$('#sp-hint'), signin=$('#sp-signin'), signout=$('#sp-signout'), provRow=$('#sp-provision-row');
+  if(!badge) return;
+  if(!spConfigured()){
+    badge.textContent='á döfinni'; badge.className='badge wip';
+    hint.textContent='Nýja gagnageymslan (SharePoint-listi í stað CSV, myndir í SharePoint í stað Cloudinary). Óvirkt þangað til Client ID/Tenant ID frá IT er komið inn í kóðann.';
+    signin.disabled=true; signin.style.opacity=.5;
+    signout.style.display='none'; provRow.style.display='none';
+    return;
+  }
+  signin.disabled=false; signin.style.opacity=1;
+  hint.textContent='Tengt við '+SP_SITE_HOSTNAME+SP_SITE_PATH+'.';
+  if(msalAccount){
+    badge.textContent='innskráð/ur'; badge.className='badge done';
+    signin.style.display='none'; signout.style.display='block';
+    provRow.style.display='flex';
+    $('#sp-status').textContent='Innskráð/ur sem: '+(msalAccount.username||msalAccount.name||'?');
+  } else {
+    badge.textContent='ekki innskráð'; badge.className='badge';
+    signin.style.display='block'; signout.style.display='none';
+    provRow.style.display='none';
+  }
+}
+
+/* ---------- Graph API: grunnköll ---------- */
+function graphFetch(path,opts){
+  opts=opts||{};
+  return msGetToken().then(function(token){
+    var headers=Object.assign({'Authorization':'Bearer '+token},opts.headers||{});
+    var url=path.indexOf('http')===0 ? path : GRAPH_BASE+path;
+    return fetch(url,Object.assign({},opts,{headers:headers}));
+  });
+}
+var spSiteId=null, spListId=null;
+function spResolveSite(){
+  if(spSiteId) return Promise.resolve(spSiteId);
+  return graphFetch('/sites/'+SP_SITE_HOSTNAME+':'+SP_SITE_PATH)
+    .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status+' - fann ekki SharePoint-síðuna'); return r.json(); })
+    .then(function(site){ spSiteId=site.id; return spSiteId; });
+}
+function spEnsureList(){
+  if(spListId) return Promise.resolve(spListId);
+  return spResolveSite().then(function(siteId){
+    return graphFetch('/sites/'+siteId+'/lists?$select=id,displayName,name')
+      .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status+' - gat ekki lesið lista'); return r.json(); })
+      .then(function(data){
+        var existing=(data.value||[]).filter(function(l){ return l.displayName===SP_LIST_NAME||l.name===SP_LIST_NAME; })[0];
+        if(existing){ spListId=existing.id; return spListId; }
+        var body={ displayName:SP_LIST_NAME, list:{template:'genericList'}, columns:SP_SCHEMA.map(spTypeToColumnDef) };
+        return graphFetch('/sites/'+siteId+'/lists',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+          .then(function(r){ if(!r.ok) return r.text().then(function(t){ throw new Error('HTTP '+r.status+' við stofnun lista: '+t); }); return r.json(); })
+          .then(function(list){ spListId=list.id; return spListId; });
+      });
+  });
+}
+function spListItems(){
+  return spEnsureList().then(function(){
+    var items=[];
+    function page(url){
+      return graphFetch(url)
+        .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+        .then(function(data){
+          items=items.concat(data.value||[]);
+          if(data['@odata.nextLink']) return page(data['@odata.nextLink']);
+          return items;
+        });
+    }
+    return page('/sites/'+spSiteId+'/lists/'+spListId+'/items?$expand=fields&$top=200');
+  });
+}
+function spCreateItem(fieldsObj){
+  return spEnsureList().then(function(){
+    return graphFetch('/sites/'+spSiteId+'/lists/'+spListId+'/items',{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fields:fieldsObj})
+    }).then(function(r){ if(!r.ok) return r.text().then(function(t){ throw new Error('HTTP '+r.status+': '+t); }); return r.json(); });
+  });
+}
+function spUpdateItem(itemId,fieldsObj){
+  return spEnsureList().then(function(){
+    return graphFetch('/sites/'+spSiteId+'/lists/'+spListId+'/items/'+itemId+'/fields',{
+      method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(fieldsObj)
+    }).then(function(r){ if(!r.ok) return r.text().then(function(t){ throw new Error('HTTP '+r.status+': '+t); }); return r.json(); });
+  });
+}
+/* ---------- Graph API: myndir í SharePoint-skjalasafni ---------- */
+function spUploadPhoto(blob,fileName){
+  return spResolveSite().then(function(siteId){
+    return graphFetch('/sites/'+siteId+'/drive/root:/'+SP_PHOTO_FOLDER+'/'+encodeURIComponent(fileName)+':/content',{
+      method:'PUT',headers:{'Content-Type':'application/octet-stream'},body:blob
+    }).then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); });
+  });
+}
+function spPhotoBlobUrl(fileName){
+  return spResolveSite().then(function(siteId){
+    return graphFetch('/sites/'+siteId+'/drive/root:/'+SP_PHOTO_FOLDER+'/'+encodeURIComponent(fileName)+':/content')
+      .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.blob(); })
+      .then(function(blob){ return URL.createObjectURL(blob); });
+  });
+}
+$('#sp-signin').addEventListener('click',function(){
+  msSignIn().then(function(){ toast('Skráð/ur inn með Microsoft ✓'); })
+    .catch(function(err){ console.warn('Innskráning mistókst:',err); toast('Innskráning mistókst: '+err.message); });
+});
+$('#sp-signout').addEventListener('click',function(){ msSignOut(); });
+$('#sp-provision').addEventListener('click',function(){
+  $('#sp-status').textContent='Athuga/bý til lista...';
+  spEnsureList().then(function(){
+    $('#sp-status').textContent='Listinn "'+SP_LIST_NAME+'" er tilbúinn á '+SP_SITE_HOSTNAME+SP_SITE_PATH+' ✓';
+    toast('SharePoint-listi tilbúinn ✓');
+  }).catch(function(err){
+    console.error('Listastofnun mistókst:',err);
+    $('#sp-status').textContent='Mistókst: '+err.message;
+    toast('Mistókst að stofna/staðfesta lista');
+  });
+});
+
 /* ---------- GitHub: myndir (eldri leið - notuð til að ná í myndir sem
    þegar eru til á GitHub frá því fyrir Cloudinary-breytinguna) ---------- */
 function ghPhotoUrl(cfg,name){
@@ -1783,6 +2030,8 @@ if('geolocation' in navigator){
 /* ---------- Ræsing ---------- */
 loadKks();
 loadEdits();
+initMsal();
+updateSpUi();
 openDB().then(initialLoad);
 // Sækjum nýjustu miðlægu skrána af GitHub við ræsingu (ef stillt)
 if(ghConfigured()){
