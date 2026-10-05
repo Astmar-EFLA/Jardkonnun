@@ -1422,8 +1422,9 @@ function spFromField(col,v){
     default: return Array.isArray(v) ? v.join(', ') : String(v);
   }
 }
-var SP_EXPECTED_FACETS={ text:['text','note'], note:['note','text'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
-var APP_BUILD='2026-10-05-c';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
+/* note verður að vera "Margar línur" - einnar-línu texti takmarkast við 255 stafi og löng lýsing myndi hafna færslu */
+var SP_EXPECTED_FACETS={ text:['text','note'], note:['note'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
+var APP_BUILD='2026-10-05-d';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
 function spDiagnose(){
   var lines=['Útgáfa appsins: '+APP_BUILD];
   return spLoadColumns(true).then(function(by){
@@ -1456,10 +1457,11 @@ function spCsvNameToSp(h){
   if(h.indexOf('Uppfyllir mastursstæði')===0) return SP_UPPFYLLIR;
   return h;
 }
-var spImportSkipped=[];
+var spImportSkipped=[], spImportTooLong=[];
 function spSchemaByDisplay(d){ return SP_SCHEMA.filter(function(x){ return x.d===d; })[0]; }
+/* Skilar null ef gildi er of langt fyrir einnar-línu dálk (255 stafir) - þá er röðin sleppt og tilkynnt */
 function spBuildFields(cols,header,row,defaultKks){
-  var f={}, nr='', nafn='';
+  var f={}, nr='', nafn='', tooLong=false;
   header.forEach(function(h,i){
     var hn=(h||'').trim();
     if(i===0 || hn==='') return;                         // fid - SharePoint ID kemur í staðinn
@@ -1474,6 +1476,10 @@ function spBuildFields(cols,header,row,defaultKks){
       var valid = sch.fillIn ? ['Já','Nei','1','2'].indexOf(val)===-1 : sch.choices.indexOf(val)!==-1;
       if(!valid){ spImportSkipped.push('röð '+(nr||'?')+': '+sp+' = "'+val+'"'); val=undefined; }
     }
+    if(col.facet==='text' && typeof val==='string' && val.length>255){
+      spImportTooLong.push('röð '+(nr||'?')+': "'+sp+'" ('+val.length+' stafir)');
+      tooLong=true;
+    }
     if(val!==undefined) f[col.name]=val;
     if(hn==='Nr.') nr=(v||'').trim();
     if(hn==='Nafn') nafn=(v||'').trim();
@@ -1484,7 +1490,7 @@ function spBuildFields(cols,header,row,defaultKks){
   // annars er hann settur svo hann trufli ekki (skyldudálkur).
   var titleIsMapped=SP_SCHEMA.some(function(s){ return cols[s.d] && cols[s.d].name==='Title'; });
   if(!titleIsMapped) f.Title = nr + (nafn && nafn!=='-' ? ' '+nafn : '') || 'punktur';
-  return f;
+  return tooLong ? null : f;
 }
 function spBatchCreate(fieldsList,onProgress){
   var base='/sites/'+spSiteId+'/lists/'+spListId+'/items', ok=0, errors=[], chain=Promise.resolve();
@@ -1507,20 +1513,34 @@ function spBatchCreate(fieldsList,onProgress){
   }
   return chain.then(function(){ return {ok:ok,errors:errors}; });
 }
-function spImportCsvText(text,defaultKks,onProgress){
+/* Auðkenni punkts til að sleppa færslum sem eru þegar í listanum (Nr. + hnit) */
+function spKey(nr,x,y){ return String(nr==null?'':nr).trim()+'|'+Math.round(parseFloat(x)*1000)+'|'+Math.round(parseFloat(y)*1000); }
+/* existing: fyrirliggjandi færslur í listanum (frá spListItems) - þeim er sleppt */
+function spImportCsvText(text,defaultKks,onProgress,existing){
   var rows=parseCsvText(text);
   if(rows.length<2) return Promise.reject(new Error('Tóm CSV-skrá'));
-  var header=rows[0], xi=-1, yi=-1;
-  spImportSkipped=[];
-  header.forEach(function(h,i){ var n=(h||'').trim().toUpperCase(); if(n==='X') xi=i; if(n==='Y') yi=i; });
+  var header=rows[0], xi=-1, yi=-1, ni=-1;
+  spImportSkipped=[]; spImportTooLong=[];
+  header.forEach(function(h,i){ var n=(h||'').trim().toUpperCase(); if(n==='X') xi=i; if(n==='Y') yi=i; if(n==='NR.') ni=i; });
   return spLoadColumns().then(function(cols){
-    var list=[];
+    var have={};
+    (existing||[]).forEach(function(it){
+      var fl=it.fields||{};
+      have[spKey(fl[cols['Nr.'].name], fl[cols['X'].name], fl[cols['Y'].name])]=true;
+    });
+    var list=[], points=0, dup=0;
     rows.slice(1).forEach(function(row){
       if(!isFinite(parseFloat(row[xi])) || !isFinite(parseFloat(row[yi]))) return;   // línur án hnita eru ekki mastursstæði
-      list.push(spBuildFields(cols,header,row,defaultKks));
+      points++;
+      var f=spBuildFields(cols,header,row,defaultKks);
+      if(f===null) return;                                                         // of langur texti - sjá spImportTooLong
+      if(have[spKey(row[ni],row[xi],row[yi])]){ dup++; return; }
+      list.push(f);
     });
-    if(!list.length) throw new Error('Engin mastursstæði með hnit fundust í skránni');
-    return spBatchCreate(list,onProgress).then(function(res){ res.total=list.length; res.skipped=spImportSkipped.slice(); return res; });
+    if(!points) throw new Error('Engin mastursstæði með hnit fundust í skránni');
+    var done=function(res){ res.total=list.length; res.points=points; res.dup=dup; res.skipped=spImportSkipped.slice(); res.tooLong=spImportTooLong.slice(); return res; };
+    if(!list.length) return done({ok:0,errors:[]});
+    return spBatchCreate(list,onProgress).then(done);
   });
 }
 function spCreateItem(fieldsObj){
@@ -1577,15 +1597,17 @@ $('#sp-import-input').addEventListener('change',function(e){
   var st=$('#sp-status');
   st.textContent='Les listann...';
   spListItems().then(function(existing){
-    if(existing.length && !confirm('Listinn inniheldur nú þegar '+existing.length+' færslur. Bæta samt við innihaldi '+file.name+' (hætta við ef sama skrá var flutt inn áður)?')) return null;
+    if(existing.length && !confirm('Listinn inniheldur nú þegar '+existing.length+' færslur.\n\nOK = flytja aðeins inn punkta sem eru ekki þegar til (sama Nr. og hnit er sleppt).\nCancel = hætta við.')) return null;
     return file.text().then(function(text){
       st.textContent='Flyt inn...';
-      return spImportCsvText(text,kks,function(n,total){ st.textContent='Flyt inn... '+n+'/'+total; });
+      return spImportCsvText(text,kks,function(n,total){ st.textContent='Flyt inn... '+n+'/'+total; },existing);
     });
   }).then(function(res){
     if(!res) { st.textContent='Hætt við.'; return; }
-    st.textContent='Innflutningi lokið (útgáfa '+APP_BUILD+'): '+res.ok+' af '+res.total+' færslum búnar til'
+    st.textContent='Innflutningi lokið (útgáfa '+APP_BUILD+'): '+res.ok+' af '+res.total+' nýjum færslum búnar til'
       +(res.errors.length ? '\nVillur ('+res.errors.length+'), fyrstu 5:\n'+res.errors.slice(0,5).join('\n') : ' ✓')
+      +(res.dup ? '\nSleppti '+res.dup+' punktum sem voru þegar í listanum.' : '')
+      +(res.tooLong.length ? '\n✗ Sleppti '+res.tooLong.length+' punktum því texti er lengri en 255 stafir í einnar-línu dálki: '+res.tooLong.join(' | ')+'\n→ Breyttu þeim dálki í "Margar línur af texta" í SharePoint og keyrðu innflutninginn aftur (þeir punktar bætast þá við).' : '')
       +(res.skipped.length ? '\nHunsaði '+res.skipped.length+' ógild gildi (ekki í valkostum dálks): '+res.skipped.slice(0,5).join(' | ') : '');
   }).catch(function(err){
     console.error('Innflutningur mistókst:',err);
