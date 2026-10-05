@@ -872,13 +872,15 @@ var db=null;
 function openDB(){
   return new Promise(function(res){
     if(!('indexedDB' in window)){ res(); return; }
-    var r=indexedDB.open('jk2026',1);
+    var r=indexedDB.open('jk2026',2);
     r.onupgradeneeded=function(e){
       var d=e.target.result;
       if(!d.objectStoreNames.contains('photos')){
         var s=d.createObjectStore('photos',{keyPath:'id'});
         s.createIndex('fid','fid',{unique:false});
       }
+      // 'files': skyndiminni kortalaga úr SharePoint (kind:'layer') og biðröð skráa sem á eftir að hlaða upp (kind:'upload')
+      if(!d.objectStoreNames.contains('files')) d.createObjectStore('files',{keyPath:'id'});
     };
     r.onsuccess=function(e){ db=e.target.result; res(); };
     r.onerror=function(){ console.warn('IndexedDB opnaðist ekki'); res(); };
@@ -888,6 +890,11 @@ function idbPutPhoto(p){ return new Promise(function(res,rej){ var r=db.transact
 function idbDelPhoto(id){ return new Promise(function(res,rej){ var r=db.transaction('photos','readwrite').objectStore('photos').delete(id); r.onsuccess=function(){res();}; r.onerror=function(){rej(r.error);}; }); }
 function photosByFid(fid){ return new Promise(function(res,rej){ var r=db.transaction('photos','readonly').objectStore('photos').index('fid').getAll(IDBKeyRange.only(fid)); r.onsuccess=function(){res(r.result||[]);}; r.onerror=function(){rej(r.error);}; }); }
 function allPhotos(){ return new Promise(function(res,rej){ var r=db.transaction('photos','readonly').objectStore('photos').getAll(); r.onsuccess=function(){res(r.result||[]);}; r.onerror=function(){rej(r.error);}; }); }
+function idbFileOp(mode,fn){ return new Promise(function(res,rej){ if(!db){ res(null); return; } var r=fn(db.transaction('files',mode).objectStore('files')); r.onsuccess=function(){res(r.result);}; r.onerror=function(){rej(r.error);}; }); }
+function idbPutFile(rec){ return idbFileOp('readwrite',function(s){ return s.put(rec); }); }
+function idbGetFile(id){ return idbFileOp('readonly',function(s){ return s.get(id); }); }
+function idbDelFile(id){ return idbFileOp('readwrite',function(s){ return s.delete(id); }); }
+function idbAllFiles(){ return idbFileOp('readonly',function(s){ return s.getAll(); }).then(function(l){ return l||[]; }); }
 
 /* ---------- EXIF: GPS-hnit skrifuð inn í JPEG ---------- */
 function dmsRationals(deg){
@@ -1048,9 +1055,15 @@ function renderPhotoTiles(p,localList){
       +'<div class="nm">'+esc(ph.name)+(ph.lat===null?' · án GPS':'')+(ph.uploaded?' · ☁︎':' · ekki uploadað')+'</div></div>';
   }).join('');
 
+  var spMode=dataMode()==='sharepoint';
   html+=remoteOnly.map(function(ref){
     if(/^https?:\/\//i.test(ref)){
       return '<div class="ph"><img src="'+esc(ref)+'" loading="lazy" alt="mynd"><div class="nm">☁ mynd</div></div>';
+    }
+    if(spMode){
+      return '<div class="ph ph-sp" data-sp-name="'+esc(ref)+'">'
+        +'<div class="ph-remote-placeholder">☁<small>Sæki...</small></div>'
+        +'<div class="nm">'+esc(ref)+' · SharePoint</div></div>';
     }
     return '<div class="ph ph-remote" data-remote-name="'+esc(ref)+'">'
       +'<div class="ph-remote-placeholder">☁<small>Sækja mynd</small></div>'
@@ -1069,6 +1082,27 @@ function renderPhotoTiles(p,localList){
   });
   block.querySelectorAll('.ph-remote').forEach(function(el){
     el.onclick=function(){ downloadRemotePhoto(p,el.dataset.remoteName,el); };
+  });
+  block.querySelectorAll('.ph-sp').forEach(function(el){
+    var load=function(){
+      var ph=el.querySelector('.ph-remote-placeholder');
+      if(ph) ph.innerHTML='<small>Sæki...</small>';
+      msalInitPromise.then(function(){
+        if(!msalAccount) throw new Error('Ekki skráð inn');
+        return spPhotoBlobUrl(el.dataset.spName);
+      }).then(function(u){
+        if(currentFid!==p.fid) return;
+        var img=document.createElement('img'); img.src=u; img.alt='mynd';
+        el.replaceChild(img,el.firstChild);
+        el.onclick=function(){ window.open(u,'_blank'); };
+      }).catch(function(err){
+        console.warn('Mynd '+el.dataset.spName+':',err);
+        var ph2=el.querySelector('.ph-remote-placeholder');
+        if(ph2) ph2.innerHTML='☁<small>Ekki tiltæk - smelltu</small>';
+        el.onclick=load;
+      });
+    };
+    load();
   });
 }
 function downloadRemotePhoto(p,name,el){
@@ -1413,7 +1447,7 @@ function graphGetAll(path){
   var out=[];
   function page(url){
     return graphFetch(url)
-      .then(function(r){ if(!r.ok) return r.text().then(function(t){ throw new Error('HTTP '+r.status+': '+t.slice(0,200)); }); return r.json(); })
+      .then(function(r){ if(!r.ok) return r.text().then(function(t){ var e=new Error('HTTP '+r.status+': '+t.slice(0,200)); e.status=r.status; throw e; }); return r.json(); })
       .then(function(data){
         out=out.concat(data.value||[]);
         return data['@odata.nextLink'] ? page(data['@odata.nextLink']) : out;
@@ -1478,7 +1512,7 @@ function spFromField(col,v){
 }
 /* note verður að vera "Margar línur" - einnar-línu texti takmarkast við 255 stafi og löng lýsing myndi hafna færslu */
 var SP_EXPECTED_FACETS={ text:['text','note'], note:['note'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
-var APP_BUILD='2026-10-05-e';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
+var APP_BUILD='2026-10-05-f';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
 function spDiagnose(){
   var lines=['Útgáfa appsins: '+APP_BUILD];
   return spLoadColumns(true).then(function(by){
@@ -1661,6 +1695,7 @@ function spStartup(){
     return spReload(true).then(function(ok){
       if(!ok && !haveCache) spShowRetryEmpty();
       spQueuePush(800);                                          // senda óvistaðar breytingar frá ónettengdri notkun
+      spFlushUploads();                                          // myndir, slóðir og lög sem biðu
     });
   });
 }
@@ -1766,20 +1801,148 @@ function spUpdateItem(itemId,fieldsObj){
     }).then(function(r){ if(!r.ok) return r.text().then(function(t){ throw new Error('HTTP '+r.status+': '+t); }); return r.json(); });
   });
 }
-/* ---------- Graph API: myndir í SharePoint-skjalasafni ---------- */
-function spUploadPhoto(blob,fileName){
-  return spResolveSite().then(function(siteId){
-    return graphFetch('/sites/'+siteId+'/drive/root:/'+SP_PHOTO_FOLDER+'/'+encodeURIComponent(fileName)+':/content',{
-      method:'PUT',headers:{'Content-Type':'application/octet-stream'},body:blob
-    }).then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); });
+/* ============================================================
+   SharePoint-skjalasafn (Shared Documents) - myndir, kortalög, GPS-slóðir
+   Möppur: myndir/ (ljósmyndir), Shp skrar/ (kortalög), Slodar/ (GPS-slóðir).
+   ============================================================ */
+var SP_SHP_FOLDER='Shp skrar', SP_TRACK_FOLDER='Slodar';
+function spEnc(path){ return path.split('/').map(encodeURIComponent).join('/'); }
+function spDrivePath(folder,name){ return '/sites/'+spSiteId+'/drive/root:/'+spEnc(name ? folder+'/'+name : folder)+':'; }
+
+/* Upphal: einfalt PUT upp að ~3.5MB, annars upload session í bútum (Graph leyfir ekki stærra í einu PUT). */
+function spUploadChunks(url,blob){
+  var CH=327680*10, total=blob.size, pos=0;      // bútastærð verður að vera margfeldi af 320 KiB
+  function next(){
+    var end=Math.min(pos+CH,total);
+    return fetch(url,{method:'PUT',headers:{'Content-Range':'bytes '+pos+'-'+(end-1)+'/'+total},body:blob.slice(pos,end)})
+      .then(function(r){
+        if(r.status!==200 && r.status!==201 && r.status!==202) throw new Error('HTTP '+r.status+' (upphleðsla)');
+        pos=end;
+        return pos>=total ? r.json() : next();
+      });
+  }
+  return next();
+}
+function spUploadFile(folder,name,blob){
+  return spResolveSite().then(function(){
+    var base=spDrivePath(folder,name);
+    if(blob.size<=3.5*1024*1024){
+      return graphFetch(base+'/content',{method:'PUT',headers:{'Content-Type':blob.type||'application/octet-stream'},body:blob})
+        .then(function(r){ if(!r.ok) return r.text().then(function(t){ throw new Error('HTTP '+r.status+' við upphal '+name+': '+t.slice(0,140)); }); return r.json(); });
+    }
+    return graphFetch(base+'/createUploadSession',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item:{'@microsoft.graph.conflictBehavior':'replace'}})})
+      .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status+' (upload session)'); return r.json(); })
+      .then(function(s){ return spUploadChunks(s.uploadUrl,blob); });
   });
 }
-function spPhotoBlobUrl(fileName){
-  return spResolveSite().then(function(siteId){
-    return graphFetch('/sites/'+siteId+'/drive/root:/'+SP_PHOTO_FOLDER+'/'+encodeURIComponent(fileName)+':/content')
-      .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.blob(); })
-      .then(function(blob){ return URL.createObjectURL(blob); });
+/* Niðurhal: forauðkennd slóð (@microsoft.graph.downloadUrl) fyrst, annars gegnum Graph */
+function spFetchContent(item){
+  var u=item['@microsoft.graph.downloadUrl'];
+  var viaGraph=function(){
+    return graphFetch('/sites/'+spSiteId+'/drive/items/'+item.id+'/content')
+      .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status+' (niðurhal)'); return r; });
+  };
+  if(!u) return viaGraph();
+  return fetch(u).then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r; }).catch(viaGraph);
+}
+function spListFolder(folder){
+  return spResolveSite().then(function(){ return graphGetAll(spDrivePath(folder)+'/children?$top=200'); });
+}
+function spDownloadBlob(folder,name){
+  return spResolveSite().then(function(){
+    return graphFetch(spDrivePath(folder,name)).then(function(r){
+      if(!r.ok){ var e=new Error('HTTP '+r.status+' - '+name+' finnst ekki'); e.status=r.status; throw e; }
+      return r.json();
+    });
+  }).then(function(item){ return spFetchContent(item); }).then(function(r){ return r.blob(); });
+}
+var spPhotoUrls={};
+function spPhotoBlobUrl(name){
+  if(spPhotoUrls[name]) return Promise.resolve(spPhotoUrls[name]);
+  return spDownloadBlob(SP_PHOTO_FOLDER,name).then(function(b){ var u=URL.createObjectURL(b); spPhotoUrls[name]=u; return u; });
+}
+
+/* ---------- Biðröð skráa sem á eftir að hlaða upp (t.d. GPS-slóðir teknar án nets) ---------- */
+var spFlushing=false;
+function spQueueUpload(folder,name,blob){
+  var rec={id:'up:'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),kind:'upload',folder:folder,name:name,blob:blob,createdAt:Date.now()};
+  return idbPutFile(rec).then(function(){ return spFlushUploads(); });
+}
+function spFlushUploads(){
+  if(spFlushing || !db || !msalAccount || dataMode()!=='sharepoint') return Promise.resolve(0);
+  uploadPendingPhotos(true);                         // myndir bíða líka eftir neti/innskráningu
+  spFlushing=true;
+  var sent=0;
+  return idbAllFiles().then(function(all){
+    var pending=all.filter(function(f){ return f.kind==='upload'; }), chain=Promise.resolve();
+    pending.forEach(function(f){
+      chain=chain.then(function(){
+        return spUploadFile(f.folder,f.name,f.blob).then(function(){ sent++; return idbDelFile(f.id); })
+          .catch(function(err){ console.warn('Upphal '+f.name+' mistókst (reynt aftur síðar):',err); });
+      });
+    });
+    return chain;
+  }).then(function(){ if(sent) toast(sent+(sent===1?' skrá vistuð':' skrár vistaðar')+' í SharePoint ✓'); return sent; })
+    .catch(function(err){ console.warn('Upphalsbiðröð:',err); return 0; })
+    .finally(function(){ spFlushing=false; });
+}
+window.addEventListener('online',function(){ spFlushUploads(); });
+document.addEventListener('visibilitychange',function(){ if(!document.hidden) spFlushUploads(); });
+
+/* ---------- Kortalög úr SharePoint-möppunni "Shp skrar" (.zip með shapefile eða .geojson) ---------- */
+var LS_HIDDEN_LAYERS='jk2026_hidden_layers', LS_LAYER_COLORS='jk2026_layer_colors';
+function lsJson(k,def){ try{ return JSON.parse(localStorage.getItem(k))||def; }catch(e){ return def; } }
+function lsSetJson(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); }catch(e){} }
+function spParseLayerFile(name,buf){
+  if(/\.zip$/i.test(name)) return shp(buf).then(function(res){ return Array.isArray(res) ? res : [res]; });
+  var gj=JSON.parse(new TextDecoder('utf-8').decode(buf));
+  return Promise.resolve([{name:name.replace(/\.(geo)?json$/i,''),geojson:gj}]);
+}
+function spAddLayers(fileName,buf){
+  return spParseLayerFile(fileName,buf).then(function(cols){
+    var colors=lsJson(LS_LAYER_COLORS,{}), hidden=lsJson(LS_HIDDEN_LAYERS,[]);
+    cols.forEach(function(col){
+      var name=col.fileName||col.name||fileName;
+      if(hidden.indexOf(name)!==-1) return;
+      if(customLayers.some(function(c){ return c.name===name; })) return;
+      addLineLayer(reprojectIsn93IfNeeded(col.geojson||col),name,colors[name]);
+    });
   });
+}
+function spLayerBytes(item){
+  var id='layer:'+item.name;
+  return idbGetFile(id).then(function(c){
+    if(c && c.etag===item.eTag && c.buf) return c.buf;          // óbreytt skrá - notum skyndiminni
+    return spFetchContent(item).then(function(r){ return r.arrayBuffer(); }).then(function(buf){
+      idbPutFile({id:id,kind:'layer',name:item.name,etag:item.eTag,buf:buf});
+      return buf;
+    });
+  });
+}
+var spLayersLoading=false;
+function spLoadMapLayers(){
+  if(dataMode()!=='sharepoint' || !map || spLayersLoading) return Promise.resolve();
+  spLayersLoading=true;
+  return msalInitPromise.then(function(){
+    if(!msalAccount) return;
+    return spListFolder(SP_SHP_FOLDER).then(function(items){
+      var files=items.filter(function(it){ return it.file && /\.(zip|geojson|json)$/i.test(it.name); });
+      return files.reduce(function(p,it){
+        return p.then(function(){
+          return spLayerBytes(it).then(function(buf){ return spAddLayers(it.name,buf); })
+            .catch(function(err){ console.warn('Lag '+it.name+':',err); toast('Gat ekki lesið lag: '+it.name); });
+        });
+      },Promise.resolve());
+    }).catch(function(err){
+      if(err.status===404) return;                               // mappan er ekki til (engin lög)
+      console.warn('Gat ekki sótt kortalög - nota vistuð:',err);  // ónettengt: skyndiminni
+      return idbAllFiles().then(function(all){
+        return all.filter(function(f){ return f.kind==='layer'; }).reduce(function(p,f){
+          return p.then(function(){ return spAddLayers(f.name,f.buf).catch(function(){}); });
+        },Promise.resolve());
+      });
+    });
+  }).finally(function(){ spLayersLoading=false; });
 }
 $('#sp-signin').addEventListener('click',function(){
   toast('Fer á Microsoft-innskráningu...');
@@ -1854,7 +2017,10 @@ function uploadPendingPhotos(silent){
     var chain=Promise.resolve();
     pending.forEach(function(ph){
       chain=chain.then(function(){
-        return uploadOnePhotoCloudinary(ph).then(function(url){
+        var up = dataMode()==='sharepoint'
+          ? (msalAccount ? spUploadFile(SP_PHOTO_FOLDER,ph.name,ph.blob).then(function(){ return null; }) : Promise.reject(new Error('Ekki skráð inn í Microsoft')))
+          : uploadOnePhotoCloudinary(ph);
+        return up.then(function(url){
           ph.uploaded=true; ph.cloudUrl=url;
           touchedFids[ph.fid]=true;
           return idbPutPhoto(ph);
@@ -2238,6 +2404,14 @@ function saveTrackAsShapefile(){
   zip.generateAsync({type:'blob'}).then(function(blob){
     var d=new Date();
     var name='GPS-slod_'+d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0')+'_'+String(d.getHours()).padStart(2,'0')+String(d.getMinutes()).padStart(2,'0')+'.zip';
+    if(dataMode()==='sharepoint' && msalAccount){
+      // SharePoint: slóðin fer í möppuna "Slodar" (með notandanafni) - biðröð ef ekkert net
+      var who=((msalAccount.username||'').split('@')[0]||'notandi').replace(/[^\w.-]+/g,'_');
+      var spName=name.replace(/\.zip$/,'_'+who+'.zip');
+      spQueueUpload(SP_TRACK_FOLDER,spName,blob);
+      toast('Slóð ('+trackPoints.length+' punktar) vistuð í SharePoint - Slodar/'+spName);
+      return;
+    }
     var url=URL.createObjectURL(blob);
     var a=document.createElement('a'); a.href=url; a.download=name; a.click();
     setTimeout(function(){URL.revokeObjectURL(url);},1000);
@@ -2308,6 +2482,7 @@ function addLineLayer(geojson,name,color){
 function setLineLayerColor(entry,color){
   entry.color=color;
   entry.layer.setStyle({color:color,fillColor:color});
+  var lc=lsJson(LS_LAYER_COLORS,{}); lc[entry.name]=color; lsSetJson(LS_LAYER_COLORS,lc);
   var saved=savedLines();
   var s=saved.filter(function(x){return x.name===entry.name;})[0];
   if(s){
@@ -2322,20 +2497,42 @@ function removeLineLayer(entry){
   if(i!==-1) customLayers.splice(i,1);
   var saved=savedLines().filter(function(s){ return s.name!==entry.name; });
   try{ localStorage.setItem(LS_LINES,JSON.stringify(saved)); }catch(e){}
+  if(dataMode()==='sharepoint'){
+    var hidden=lsJson(LS_HIDDEN_LAYERS,[]);
+    if(hidden.indexOf(entry.name)===-1) hidden.push(entry.name);
+    lsSetJson(LS_HIDDEN_LAYERS,hidden);
+    renderLayerList();
+    toast('Lagi falið á þessu tæki (er áfram í SharePoint): '+entry.name);
+    return;
+  }
   renderLayerList();
   toast('Lagi hent: '+entry.name);
+}
+function wireUnhide(el){
+  var a=el.querySelector('#layers-unhide');
+  if(!a) return;
+  a.addEventListener('click',function(ev){
+    ev.preventDefault();
+    lsSetJson(LS_HIDDEN_LAYERS,[]);
+    renderLayerList();
+    spLoadMapLayers();
+  });
 }
 function renderLayerList(){
   var el=$('#layer-list');
   if(!el) return;
-  if(!customLayers.length){ el.innerHTML=''; return; }
-  el.innerHTML = customLayers.map(function(entry,i){
+  var nHidden = dataMode()==='sharepoint' ? lsJson(LS_HIDDEN_LAYERS,[]).length : 0;
+  var hiddenHtml = nHidden
+    ? '<div style="padding:6px 0;font-size:12px;color:var(--muted)">'+nHidden+' falin lög · <a href="#" id="layers-unhide">sýna aftur</a></div>' : '';
+  if(!customLayers.length){ el.innerHTML=hiddenHtml; wireUnhide(el); return; }
+  el.innerHTML = hiddenHtml + customLayers.map(function(entry,i){
     return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0">'
       +'<input type="color" data-layer-i="'+i+'" value="'+entry.color+'" style="width:32px;height:32px;padding:0;border:1px solid var(--line);border-radius:6px;background:none;flex:0 0 auto">'
       +'<span style="font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(entry.name)+'</span>'
       +'<button type="button" class="icon-btn" data-remove-i="'+i+'" title="Henda lagi" aria-label="Henda lagi" style="width:32px;height:32px;font-size:15px;flex:0 0 auto">✕</button>'
       +'</div>';
   }).join('');
+  wireUnhide(el);
   el.querySelectorAll('input[type=color]').forEach(function(inp){
     inp.addEventListener('input',function(){
       var entry=customLayers[parseInt(inp.dataset.layerI,10)];
@@ -2367,6 +2564,15 @@ function applyLineData(collections,persist){
   }
 }
 function loadLineLayers(){
+  if(dataMode()==='sharepoint'){
+    // SharePoint-mappan "Shp skrar" er uppspretta laganna; ef ekkert skilar sér
+    // (ekki innskráður, ónettengt án skyndiminnis) notum við eldri staðbundin lög.
+    spLoadMapLayers().then(function(){ if(!customLayers.length) loadLineLayersLocal(); });
+    return;
+  }
+  loadLineLayersLocal();
+}
+function loadLineLayersLocal(){
   var saved=savedLines();
   if(saved.length){
     saved.forEach(function(s){ addLineLayer(s.geojson,s.name,s.color); });
@@ -2406,8 +2612,14 @@ $('#layer-input').addEventListener('change',function(e){
     });
   }
   p.then(function(collections){
-    applyLineData(collections,true);
-    toast('Lag flutt inn: '+collections.length);
+    var sp=dataMode()==='sharepoint';
+    applyLineData(collections,!sp);
+    if(sp){
+      if(msalAccount){
+        spQueueUpload(SP_SHP_FOLDER,file.name,file);
+        toast('Lag flutt inn og vistað í SharePoint (Shp skrar): '+file.name);
+      } else toast('Lag flutt inn en ekki vistað í SharePoint - skráðu þig inn í stillingum');
+    } else toast('Lag flutt inn: '+collections.length);
   }).catch(function(err){
     console.error('Lag-innflutningur:',err);
     toast('Lestur skrár mistókst - er þetta zippuð shapefile eða GeoJSON?');
