@@ -1391,10 +1391,14 @@ function spLoadColumns(force){
   }).then(function(list){
     var by={};
     list.forEach(function(c){
-      if(c.readOnly) return;   // t.d. LinkTitle: skrifvarin afrit af Title með sama birta heiti
+      // Skrifvarðir/útreiknaðir dálkar (t.d. LinkTitle: afrit af Title með sama birta heiti) - bæði eftir
+      // readOnly og heiti, því Graph merkir þá ekki alltaf readOnly
+      if(c.readOnly || /^(LinkTitle|LinkFilename|ContentType|_)/.test(c.name)) return;
       by[c.displayName]={ name:c.name, displayName:c.displayName, facet:spFacet(c),
         choices:(c.choice&&c.choice.choices)||[], allowTextEntry:!!(c.choice&&c.choice.allowTextEntry) };
     });
+    // Ef Title heitir enn "Title" en Nr.-dálkur er ekki til sér: Title gegnir hlutverki Nr.
+    if(!by['Nr.'] && by['Title']) by['Nr.']=by['Title'];
     spCols=by;
     return by;
   });
@@ -1419,8 +1423,9 @@ function spFromField(col,v){
   }
 }
 var SP_EXPECTED_FACETS={ text:['text','note'], note:['note','text'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
+var APP_BUILD='2026-10-05-c';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
 function spDiagnose(){
-  var lines=[];
+  var lines=['Útgáfa appsins: '+APP_BUILD];
   return spLoadColumns(true).then(function(by){
     lines.push('Listi "'+SP_LIST_NAME+'" fannst ✓ ('+Object.keys(by).length+' dálkar alls)');
     var missing=[], typeDiff=[], choiceDiff=[];
@@ -1579,7 +1584,7 @@ $('#sp-import-input').addEventListener('change',function(e){
     });
   }).then(function(res){
     if(!res) { st.textContent='Hætt við.'; return; }
-    st.textContent='Innflutningi lokið: '+res.ok+' af '+res.total+' færslum búnar til'
+    st.textContent='Innflutningi lokið (útgáfa '+APP_BUILD+'): '+res.ok+' af '+res.total+' færslum búnar til'
       +(res.errors.length ? '\nVillur ('+res.errors.length+'), fyrstu 5:\n'+res.errors.slice(0,5).join('\n') : ' ✓')
       +(res.skipped.length ? '\nHunsaði '+res.skipped.length+' ógild gildi (ekki í valkostum dálks): '+res.skipped.slice(0,5).join(' | ') : '');
   }).catch(function(err){
