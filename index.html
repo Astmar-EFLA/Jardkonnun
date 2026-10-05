@@ -266,6 +266,13 @@
   </div>
   <h2 style="margin-top:22px">Microsoft / SharePoint <span class="badge" id="sp-badge">á döfinni</span></h2>
   <div class="hint" id="sp-hint">Nýja gagnageymslan (SharePoint-listi í stað CSV, myndir í SharePoint í stað Cloudinary). Óvirkt þangað til Client ID/Tenant ID frá IT er komið inn í kóðann.</div>
+  <div id="sp-mode-row" style="display:none;margin-top:10px">
+    <label for="data-mode">Gagnageymsla (hvaðan appið les og hvert það vistar)</label>
+    <select id="data-mode">
+      <option value="github">GitHub CSV (eldri leið)</option>
+      <option value="sharepoint">SharePoint-listi (nýja leiðin)</option>
+    </select>
+  </div>
   <div class="row" style="margin-top:10px">
     <button class="btn btn-ghost" id="sp-signin">Skrá inn með Microsoft</button>
     <button class="btn btn-ghost" id="sp-signout" style="display:none">Skrá út</button>
@@ -302,6 +309,9 @@ var LS_EDITS = 'jk2026_edits';
 var LS_KKS = 'jk2026_kks';
 var LS_PHOTO_QUALITY = 'jk2026_photoq';
 function getPhotoQuality(){ try{ return localStorage.getItem(LS_PHOTO_QUALITY)||'std'; }catch(e){ return 'std'; } }
+var LS_MODE = 'jk2026_mode';
+/* 'github' = CSV á GitHub (eldri leið, sjálfgefið) | 'sharepoint' = SharePoint-listi. SharePoint krefst Client ID. */
+function dataMode(){ try{ return (localStorage.getItem(LS_MODE)==='sharepoint' && spConfigured()) ? 'sharepoint' : 'github'; }catch(e){ return 'github'; } }
 var LS_SAVE_ORIGINAL = 'jk2026_saveorig';
 function getSaveOriginal(){ try{ return localStorage.getItem(LS_SAVE_ORIGINAL)==='1'; }catch(e){ return false; } }
 var LABEL_MIN_ZOOM = 13;
@@ -349,8 +359,34 @@ var KKS_COL_NAME = 'Línuheiti/KKS';
 var kksIdx = -1;
 var currentKks = '';
 
-function loadEdits(){ try{ edits = JSON.parse(localStorage.getItem(LS_EDITS)) || {}; }catch(e){ edits = {}; } }
-function saveEdits(){ try{ localStorage.setItem(LS_EDITS, JSON.stringify(edits)); }catch(e){ toast('Vistun mistókst — geymsla full?'); } }
+/* Breytingar eru vistaðar eftir HEITI dálks (ekki númeri) - annars færðust gildi í rangan dálk
+   þegar dálkum var bætt við/þeir endurraðaðir (sbr. víxlaða KKS/jarðvegsmat-reiti í gömlum gögnum).
+   Í minni eru þær áfram { fid:{ v:{colIdx:value} } } og er breytt úr/í nöfn við vistun/hleðslu. */
+var LS_EDITS2 = 'jk2026_edits2';
+var pendingEditsByName = null;   // lesið úr geymslu við ræsingu, varpað á dálkanúmer þegar haus er þekktur
+function loadEdits(){ edits = {}; try{ pendingEditsByName = JSON.parse(localStorage.getItem(LS_EDITS2)) || {}; }catch(e){ pendingEditsByName = {}; } }
+function editsToNamed(){
+  var out={};
+  Object.keys(edits).forEach(function(fid){
+    var e=edits[fid]; if(!e||!e.v) return;
+    var v={};
+    Object.keys(e.v).forEach(function(k){ var n=((header[k])||'').trim(); if(n) v[n]=e.v[k]; });
+    if(Object.keys(v).length) out[fid]={v:v};
+  });
+  return out;
+}
+function rehydrateEdits(named){
+  edits={};
+  var idx={}; header.forEach(function(h,i){ idx[(h||'').trim()]=i; });
+  Object.keys(named||{}).forEach(function(fid){
+    var src=named[fid]; if(!src||!src.v) return;
+    var dst={v:{}};
+    Object.keys(src.v).forEach(function(n){ if(n in idx) dst.v[idx[n]]=src.v[n]; });
+    if(Object.keys(dst.v).length) edits[fid]=dst;
+  });
+  pendingEditsByName=null;
+}
+function saveEdits(){ try{ localStorage.setItem(LS_EDITS2, JSON.stringify(header.length ? editsToNamed() : (pendingEditsByName||{}))); }catch(e){ toast('Vistun mistókst — geymsla full?'); } }
 function loadKks(){ try{ currentKks = localStorage.getItem(LS_KKS) || ''; }catch(e){ currentKks = ''; } }
 function saveKks(v){
   currentKks = (v||'').trim();
@@ -432,7 +468,7 @@ function fieldType(name){
   if(n.indexOf('1: já, 2:nei') !== -1) return 'select12';
   if(n.indexOf('lýsing') !== -1 || n.indexOf('athugunar') !== -1) return 'textarea';
   if(n.indexOf('hver') !== -1) return 'text'; // "ef þörf, þá hver" / "hvers vegna"
-  if(/^(er |eru |leiðir |búið )/.test(n)) return 'select';
+  if(/^(er |eru |leiðir |búið |uppfyllir )/.test(n)) return 'select';
   return 'text';
 }
 var ljosIdx = -1; // dálkurinn "Ljósmynd" - fær sjálfvirkt myndanöfn
@@ -453,7 +489,8 @@ var MAST_COND_NAMES = {
   'Er þörf á slóð fyrir jarðvinnutæki?':1,
   'Er þörf á reisingarplani fyrir krana?':1,
   'Búið að teikna aðkomuslóð a mynd?':1,
-  'Uppfyllir mastursstæði kröfur reglugerða um fjarlægð frá vegum og öðrum mannvirkjum? (1: já, 2:nei)':1
+  'Uppfyllir mastursstæði kröfur reglugerða um fjarlægð frá vegum og öðrum mannvirkjum? (1: já, 2:nei)':1,
+  'Uppfyllir mastursstæði kröfur reglugerða um fjarlægð frá vegum og öðrum mannvirkjum?':1   // SharePoint-snið (Já/Nei)
 };
 var soilIdx = -1; // "Er jarðvegsmat framkvæmt?" - stýrir sýnileika SOIL_COND_NAMES
 var SOIL_COL_NAME = 'Er jarðvegsmat framkvæmt?';
@@ -567,17 +604,25 @@ function updateProgress(){
 function applyCsv(text){
   var rows = parseCsvText(text);
   if(!rows.length){ toast('Tóm CSV-skrá'); return false; }
-  header = rows[0];
-  rawRows = rows.slice(1);
+  return applyParsed(rows[0], rows.slice(1), text);
+}
+/* Sameiginleg leið fyrir CSV og SharePoint: haus + raðir (strengir, dálkur 0 = fid).
+   csvText (valkvætt) er vistað sem CSV-skyndiminni. */
+function applyParsed(hdr, rws, csvText){
+  var named = pendingEditsByName || editsToNamed();   // taka breytingar eftir HEITI áður en haus breytist
+  header = hdr;
+  rawRows = rws;
+  edits = {};
   if(header.length < HORN_IDX+2 || (header[COL.x]||'').trim().toUpperCase()!=='X'){
-    toast('Óvænt CSV-snið — X-dálkur fannst ekki á réttum stað'); return false;
+    toast('Óvænt gagnasnið — X-dálkur fannst ekki á réttum stað'); return false;
   }
   ensureKksColumn();
   ensureSoilColumn();
   ensureDoneColumn();
+  rehydrateEdits(named);
   buildFields();
   buildPoints();
-  try{ localStorage.setItem(LS_CSV, text); }catch(e){}
+  if(csvText!=null){ try{ localStorage.setItem(LS_CSV, csvText); }catch(e){} }
   renderList(); updateProgress();
   if(mapInited) renderMapMarkers();
   return true;
@@ -600,6 +645,7 @@ function tryLoadBackupFile(){
   });
 }
 function initialLoad(){
+  if(dataMode()==='sharepoint'){ spStartup(); return; }
   var stored = null;
   try{ stored = localStorage.getItem(LS_CSV); }catch(e){}
   if(stored){ applyCsv(stored); toast('Gögn sótt úr minni tækisins'); return; }
@@ -665,6 +711,7 @@ function setVal(fid, colIdx, value){
   edits[fid].v[colIdx]=value;
   if(colIdx!==kksIdx) ensureKksStamped(fid);
   saveEdits(); updateProgress();
+  if(dataMode()==='sharepoint') spQueuePush();
 }
 function openForm(fid){
   var p=points.filter(function(x){return x.fid===fid;})[0];
@@ -780,6 +827,7 @@ function show(view){
 }
 function backToList(){
   renderList(); updateProgress(); if(mapInited)renderMapMarkers(); show('list');
+  if(dataMode()==='sharepoint') spQueuePush(300);
 }
 $('#f-close').addEventListener('click', backToList);
 $('#set-import').addEventListener('click',function(){ document.getElementById('dlg-gh').close(); $('#csv-input').click(); });
@@ -1253,7 +1301,7 @@ function spTypeToColumnDef(f){
 }
 
 /* ---------- MSAL: innskráning ---------- */
-var msalInstance=null, msalAccount=null;
+var msalInstance=null, msalAccount=null, msalInitPromise=Promise.resolve();
 function initMsal(){
   if(!spConfigured() || typeof msal==='undefined') return;
   msalInstance=new msal.PublicClientApplication({
@@ -1264,7 +1312,7 @@ function initMsal(){
     },
     cache:{cacheLocation:'localStorage'}
   });
-  msalInstance.initialize().then(function(){
+  msalInitPromise=msalInstance.initialize().then(function(){
     return msalInstance.handleRedirectPromise();
   }).then(function(res){
     var accounts=msalInstance.getAllAccounts();
@@ -1286,13 +1334,17 @@ function msSignOut(){
   if(!msalInstance||!msalAccount) return Promise.resolve();
   return msalInstance.logoutRedirect({account:msalAccount});
 }
+/* Engin sjálfvirk tilvísun hér: bakgrunnskall (vistun/sókn) mega ekki senda síðuna á Microsoft,
+   sérstaklega ekki þegar netið er farið úti á vettvangi. Ef þarf innskráningu er hent villu með
+   code 'NEEDS_LOGIN' og notandi skráir sig inn með hnappnum. */
 function msGetToken(scopes){
-  if(!msalInstance||!msalAccount) return Promise.reject(new Error('Ekki innskráð/ur með Microsoft'));
-  var sc=scopes||GRAPH_SCOPES;
-  return msalInstance.acquireTokenSilent({scopes:sc,account:msalAccount})
-    .catch(function(){
-      msalInstance.acquireTokenRedirect({scopes:sc,account:msalAccount});
-      return new Promise(function(){});
+  if(!msalInstance||!msalAccount){ var e0=new Error('Ekki innskráð/ur með Microsoft'); e0.code='NEEDS_LOGIN'; return Promise.reject(e0); }
+  return msalInstance.acquireTokenSilent({scopes:scopes||GRAPH_SCOPES,account:msalAccount})
+    .catch(function(err){
+      var needs = (typeof msal!=='undefined' && msal.InteractionRequiredAuthError && err instanceof msal.InteractionRequiredAuthError)
+        || /interaction_required|login_required|consent_required/.test((err&&err.errorCode)||'');
+      if(needs){ var e1=new Error('Innskráning útrunnin - skráðu þig inn aftur (⚙)'); e1.code='NEEDS_LOGIN'; throw e1; }
+      throw err;   // t.d. netvilla - viðkomandi reynir aftur síðar
     })
     .then(function(res){ return res.accessToken; });
 }
@@ -1308,6 +1360,8 @@ function updateSpUi(){
   }
   signin.disabled=false; signin.style.opacity=1;
   hint.textContent='Tengt við '+SP_SITE_HOSTNAME+SP_SITE_PATH+'.';
+  $('#sp-mode-row').style.display='block';
+  $('#data-mode').value=dataMode();
   if(msalAccount){
     badge.textContent='innskráð/ur'; badge.className='badge done';
     signin.style.display='none'; signout.style.display='block';
@@ -1424,7 +1478,7 @@ function spFromField(col,v){
 }
 /* note verður að vera "Margar línur" - einnar-línu texti takmarkast við 255 stafi og löng lýsing myndi hafna færslu */
 var SP_EXPECTED_FACETS={ text:['text','note'], note:['note'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
-var APP_BUILD='2026-10-05-d';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
+var APP_BUILD='2026-10-05-e';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
 function spDiagnose(){
   var lines=['Útgáfa appsins: '+APP_BUILD];
   return spLoadColumns(true).then(function(by){
@@ -1543,6 +1597,161 @@ function spImportCsvText(text,defaultKks,onProgress,existing){
     return spBatchCreate(list,onProgress).then(done);
   });
 }
+/* ============================================================
+   SharePoint-listi sem gagnagrunnur (dataMode()==='sharepoint')
+   fid = SharePoint item ID. Breytingar (edits) vistast eftir heiti dálks og
+   eru sendar sem PATCH á hvern punkt - enginn CSV-samruni, engir árekstrar.
+   Gögn eru geymd í tækinu (LS_SP_CACHE) svo appið virki ónettengt.
+   ============================================================ */
+var LS_SP_CACHE='jk2026_sp_cache';
+/* Haus í sniði sem restin af appinu þekkir: fid, Nr., Nafn, ... (sama röð og SP_SCHEMA) */
+function spAppHeader(){
+  var h=['fid'];
+  SP_SCHEMA.forEach(function(f){ h.push(f.d==='Skráning lokið' ? DONE_COL_NAME : f.d); });
+  return h;
+}
+function spItemsToRows(items,cols){
+  var rows=items.map(function(it){
+    var fl=it.fields||{}, row=[String(it.id)];
+    SP_SCHEMA.forEach(function(f){ var c=cols[f.d]; row.push(c ? spFromField(c,fl[c.name]) : ''); });
+    return row;
+  });
+  rows.sort(function(a,b){ return parseInt(a[0],10)-parseInt(b[0],10); });
+  return rows;
+}
+var spLoading=false;
+function spReload(silent){
+  if(spLoading || dataMode()!=='sharepoint' || !msalAccount) return Promise.resolve(false);
+  spLoading=true;
+  return spLoadColumns().then(function(cols){
+    return spListItems().then(function(items){
+      var rows=spItemsToRows(items,cols);
+      try{ localStorage.setItem(LS_SP_CACHE,JSON.stringify(rows)); }catch(e){}
+      var ok=applyParsed(spAppHeader(),rows,null);
+      if(ok && !silent) toast('Gögn sótt úr SharePoint: '+points.length+' punktar');
+      return ok;
+    });
+  }).catch(function(err){
+    console.warn('SharePoint-sókn mistókst:',err);
+    if(!silent || err.code==='NEEDS_LOGIN') toast('Gat ekki sótt úr SharePoint: '+err.message);
+    return false;
+  }).finally(function(){ spLoading=false; });
+}
+function spShowLoginEmpty(){
+  $('#list-container').innerHTML='<div class="empty">Skráðu þig inn með Microsoft til að sækja gögnin.<br>'
+    +'<button class="btn btn-primary" id="btn-sp-login" style="width:auto;margin-top:10px;padding:10px 16px">Skrá inn með Microsoft</button></div>';
+  $('#btn-sp-login').onclick=function(){ msSignIn().catch(function(err){ toast('Innskráning mistókst: '+(err.errorMessage||err.message)); }); };
+}
+function spShowRetryEmpty(){
+  $('#list-container').innerHTML='<div class="empty">Gat ekki sótt gögn úr SharePoint (netsamband?).<br>'
+    +'<button class="btn btn-primary" id="btn-sp-retry" style="width:auto;margin-top:10px;padding:10px 16px">Reyna aftur</button></div>';
+  $('#btn-sp-retry').onclick=function(){ spReload(false).then(function(ok){ if(!ok) spShowRetryEmpty(); }); };
+}
+function spStartup(){
+  var cached=null;
+  try{ cached=JSON.parse(localStorage.getItem(LS_SP_CACHE)); }catch(e){}
+  var haveCache=!!(cached && cached.length);
+  if(haveCache) applyParsed(spAppHeader(),cached,null);          // sýnum vistuð gögn strax (virkar ónettengt)
+  return msalInitPromise.then(function(){
+    if(!msalAccount){
+      if(haveCache) toast('Ekki innskráð/ur með Microsoft - sýni vistuð gögn');
+      else spShowLoginEmpty();
+      return;
+    }
+    return spReload(true).then(function(ok){
+      if(!ok && !haveCache) spShowRetryEmpty();
+      spQueuePush(800);                                          // senda óvistaðar breytingar frá ónettengdri notkun
+    });
+  });
+}
+
+var spPushing=false, spPushTimer=null, spLastErr='';
+function spQueuePush(delay){
+  if(dataMode()!=='sharepoint') return;
+  clearTimeout(spPushTimer);
+  spPushTimer=setTimeout(function(){ spPush(false); }, delay==null ? 2000 : delay);
+}
+function spBatchPatch(batch){
+  var ok=[], gone=[], errors=[], chain=Promise.resolve();
+  for(var s=0;s<batch.length;s+=20){
+    (function(start){
+      var chunk=batch.slice(start,start+20);
+      chain=chain.then(function(){
+        var reqs=chunk.map(function(b,k){
+          return { id:String(k+1), method:'PATCH', url:'/sites/'+spSiteId+'/lists/'+spListId+'/items/'+b.fid+'/fields',
+                   headers:{'Content-Type':'application/json'}, body:b.fields };
+        });
+        return graphFetch('/$batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({requests:reqs})})
+          .then(function(r){ if(!r.ok) return r.text().then(function(t){ throw new Error('HTTP '+r.status+' ($batch): '+t.slice(0,160)); }); return r.json(); })
+          .then(function(res){
+            (res.responses||[]).forEach(function(x){
+              var b=chunk[parseInt(x.id,10)-1];
+              if(x.status>=200 && x.status<300) ok.push(b);
+              else if(x.status===404) gone.push(b);
+              else errors.push('HTTP '+x.status+' '+JSON.stringify(x.body&&x.body.error&&x.body.error.message||x.body).slice(0,140));
+            });
+          });
+      });
+    })(s);
+  }
+  return chain.then(function(){ return {ok:ok,gone:gone,errors:errors}; });
+}
+/* Sendir óvistaðar breytingar í listann. manual=true sýnir tilkynningar um árangur. */
+function spPush(manual){
+  if(dataMode()!=='sharepoint' || spPushing) return Promise.resolve();
+  var fids=Object.keys(edits).filter(function(f){ return edits[f] && Object.keys(edits[f].v).length; });
+  if(!fids.length){ if(manual) toast('Ekkert óvistað'); return Promise.resolve(); }
+  if(!msalAccount){ if(manual) toast('Ekki innskráð/ur með Microsoft'); return Promise.resolve(); }
+  spPushing=true;
+  return spLoadColumns().then(function(cols){
+    var batch=[];
+    fids.forEach(function(fid){
+      var e=edits[fid], f={}, snap={};
+      Object.keys(e.v).forEach(function(k){
+        var name=(header[k]||'').trim(); if(!name) return;
+        var col=cols[name===DONE_COL_NAME ? 'Skráning lokið' : name]; if(!col) return;
+        snap[k]=e.v[k];
+        var val=spToField(col,e.v[k]);
+        f[col.name]=(val===undefined) ? null : val;              // tómt gildi = hreinsa reitinn
+      });
+      if(Object.keys(f).length) batch.push({fid:fid,fields:f,snap:snap});
+    });
+    return batch.length ? spBatchPatch(batch) : {ok:[],gone:[],errors:[]};
+  }).then(function(res){
+    res.ok.forEach(function(b){
+      var p=points.filter(function(x){return x.fid===b.fid;})[0];
+      Object.keys(b.snap).forEach(function(k){
+        if(p && rawRows[p.rowIndex]) rawRows[p.rowIndex][k]=b.snap[k];
+        if(edits[b.fid] && edits[b.fid].v[k]===b.snap[k]) delete edits[b.fid].v[k];   // nýrri breyting á meðan helst
+      });
+      if(edits[b.fid] && !Object.keys(edits[b.fid].v).length) delete edits[b.fid];
+    });
+    res.gone.forEach(function(b){ delete edits[b.fid]; });       // punktur eytt úr listanum - breytingin á ekki lengur heima
+    saveEdits(); updateProgress();
+    if(res.errors.length){
+      console.warn('SharePoint-vistun:',res.errors);
+      if(manual || spLastErr!==res.errors[0]) toast('Vistun mistókst: '+res.errors[0]);
+      spLastErr=res.errors[0];
+    } else {
+      spLastErr='';
+      if(manual) toast('Vistað í SharePoint ✓');
+    }
+  }).catch(function(err){
+    console.warn('SharePoint-vistun:',err);
+    if(manual || (err.code==='NEEDS_LOGIN' && spLastErr!==err.message)) toast('Gat ekki vistað (breytingar geymdar í tækinu): '+err.message);
+    spLastErr=err.message;
+  }).finally(function(){
+    spPushing=false;
+    if(Object.keys(edits).length) spQueuePush(30000);            // óvistað eftir (t.d. ónettengt) - reyna aftur
+  });
+}
+window.addEventListener('online',function(){ spQueuePush(500); });
+document.addEventListener('visibilitychange',function(){ if(!document.hidden) spQueuePush(500); });
+// Sækja breytingar annarra reglulega, aðeins þegar ekkert er óvistað hér
+setInterval(function(){
+  if(dataMode()==='sharepoint' && !document.hidden && msalAccount && !Object.keys(edits).length) spReload(true);
+}, 5*60*1000);
+
 function spCreateItem(fieldsObj){
   return spEnsureList().then(function(){
     return graphFetch('/sites/'+spSiteId+'/lists/'+spListId+'/items',{
@@ -1585,6 +1794,13 @@ $('#sp-provision').addEventListener('click',function(){
     console.error('Prófun á SharePoint-lista mistókst:',err);
     $('#sp-status').textContent='Mistókst: '+err.message;
   });
+});
+$('#data-mode').addEventListener('change',function(){
+  var m=$('#data-mode').value;
+  if(m==='sharepoint' && Object.keys(edits).length && dataMode()!=='sharepoint' &&
+     !confirm('Óvistaðar breytingar í þessu tæki fara ekki yfir í SharePoint-listann (þær tilheyra CSV-skránni). Samstilltu fyrst við GitHub ef þær skipta máli.\n\nSkipta samt?')){ $('#data-mode').value=dataMode(); return; }
+  try{ localStorage.setItem(LS_MODE,m); }catch(e){}
+  location.reload();
 });
 $('#sp-import').addEventListener('click',function(){ $('#sp-import-input').click(); });
 $('#sp-import-input').addEventListener('change',function(e){
@@ -1714,6 +1930,7 @@ function mergeEditsIntoCsv(remoteText){
 }
 var syncTimer=null, syncing=false;
 function queueSync(){
+  if(dataMode()==='sharepoint'){ spQueuePush(500); return; }
   if(!ghConfigured()) return;
   clearTimeout(syncTimer);
   syncTimer=setTimeout(function(){ runSync(true); },1500);
@@ -1840,6 +2057,13 @@ document.getElementById('gh-fetch').addEventListener('click',function(){
   runSync(false);
 });
 document.getElementById('btn-sync').addEventListener('click',function(){
+  if(dataMode()==='sharepoint'){
+    var b=document.getElementById('btn-sync');
+    if(!msalAccount){ toast('Ekki innskráð/ur - opnaðu ⚙ og skráðu þig inn með Microsoft'); return; }
+    b.classList.add('spinning');
+    spPush(true).then(function(){ return spReload(false); }).finally(function(){ b.classList.remove('spinning'); });
+    return;
+  }
   if(!ghConfigured()){
     toast('Settu upp GitHub-samstillingu fyrst (⚙)');
     document.getElementById('btn-settings').click();
@@ -1852,10 +2076,12 @@ document.getElementById('gh-photos-sync').addEventListener('click',function(){
 });
 document.getElementById('gh-reset-cache').addEventListener('click',function(){
   if(!confirm('Þetta hreinsar allar óskráðar breytingar í þessu tæki (sem hafa ekki þegar samstillst) og sækir hreina útgáfu af miðlægu skránni. Halda áfram?')) return;
-  edits={}; saveEdits();
-  try{ localStorage.removeItem(LS_CSV); }catch(e){}
+  edits={}; pendingEditsByName=null; saveEdits();
+  try{ localStorage.removeItem(LS_CSV); localStorage.removeItem(LS_SP_CACHE); }catch(e){}
   document.getElementById('dlg-gh').close();
-  if(ghConfigured()){
+  if(dataMode()==='sharepoint'){
+    spReload(false);
+  } else if(ghConfigured()){
     runSync(false).then(function(){ toast('Staðbundin geymsla hreinsuð - sótt af GitHub ✓'); });
   } else {
     tryLoadBackupFile().then(function(){ toast('Staðbundin geymsla hreinsuð'); });
@@ -2242,8 +2468,8 @@ loadEdits();
 initMsal();
 updateSpUi();
 openDB().then(initialLoad);
-// Sækjum nýjustu miðlægu skrána af GitHub við ræsingu (ef stillt)
-if(ghConfigured()){
+// Sækjum nýjustu miðlægu skrána af GitHub við ræsingu (ef stillt) - ekki í SharePoint-stillingu
+if(dataMode()!=='sharepoint' && ghConfigured()){
   setTimeout(function(){ runSync(false); },2000);
 }
 // Á desktop er kortið alltaf sýnilegt vinstra megin - frumstillum það án
