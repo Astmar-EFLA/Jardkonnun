@@ -1512,7 +1512,7 @@ function spFromField(col,v){
 }
 /* note verður að vera "Margar línur" - einnar-línu texti takmarkast við 255 stafi og löng lýsing myndi hafna færslu */
 var SP_EXPECTED_FACETS={ text:['text','note'], note:['note'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
-var APP_BUILD='2026-10-05-f';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
+var APP_BUILD='2026-10-05-g';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
 function spDiagnose(){
   var lines=['Útgáfa appsins: '+APP_BUILD];
   return spLoadColumns(true).then(function(by){
@@ -1552,7 +1552,7 @@ function spBuildFields(cols,header,row,defaultKks){
   var f={}, nr='', nafn='', tooLong=false;
   header.forEach(function(h,i){
     var hn=(h||'').trim();
-    if(i===0 || hn==='') return;                         // fid - SharePoint ID kemur í staðinn
+    if(hn==='' || hn.toLowerCase()==='fid') return;      // fid - SharePoint ID kemur í staðinn
     var sp=spCsvNameToSp(hn), col=cols[sp];
     if(!col) return;
     var v=row[i];
@@ -1604,12 +1604,53 @@ function spBatchCreate(fieldsList,onProgress){
 /* Auðkenni punkts til að sleppa færslum sem eru þegar í listanum (Nr. + hnit) */
 function spKey(nr,x,y){ return String(nr==null?'':nr).trim()+'|'+Math.round(parseFloat(x)*1000)+'|'+Math.round(parseFloat(y)*1000); }
 /* existing: fyrirliggjandi færslur í listanum (frá spListItems) - þeim er sleppt */
+/* Giskar á skiltákn (; , eða tab) út frá fyrstu línu - Excel vistar oft með kommu eða tab */
+function spSniffDelimiter(text){
+  var first=text.replace(/^﻿/,'').split(/\r?\n/)[0]||'';
+  var best=';', n=-1;
+  [';','\t',','].forEach(function(d){ var c=first.split(d).length-1; if(c>n){ n=c; best=d; } });
+  return best;
+}
+/* Samræmir hausa við dálkaheiti appsins (óháð há/lágstöfum og bilum; X/Y afbrigði) */
+function spCanonHeader(h){
+  var t=(h||'').replace(/^﻿/,'').trim(); if(!t) return t;
+  var key=t.toLowerCase().replace(/\s+/g,' ');
+  var alias={'x':'X','x-hnit':'X','x hnit':'X','x (isn93)':'X','austur':'X','e':'X','easting':'X',
+             'y':'Y','y-hnit':'Y','y hnit':'Y','y (isn93)':'Y','norður':'Y','n':'Y','northing':'Y','nr':'Nr.','nr.':'Nr.','númer':'Nr.'};
+  if(alias[key]) return alias[key];
+  for(var i=0;i<SP_SCHEMA.length;i++){ if(SP_SCHEMA[i].d.toLowerCase().replace(/\s+/g,' ')===key) return SP_SCHEMA[i].d; }
+  return t;
+}
 function spImportCsvText(text,defaultKks,onProgress,existing){
-  var rows=parseCsvText(text);
+  var delim=spSniffDelimiter(text);
+  var rows=parseCsvText(delim===';' ? text : (function(){
+    // skiptum skilitákninu út fyrir ';' (utan gæsalappa, nær yfir margar línur) svo sami lesari dugi
+    var out='', q=false;
+    for(var i=0;i<text.length;i++){ var c=text[i]; if(c==='"') q=!q; out+= (!q && c===delim) ? ';' : (!q && c===';' ? ',' : c); }
+    return out;
+  })());
   if(rows.length<2) return Promise.reject(new Error('Tóm CSV-skrá'));
-  var header=rows[0], xi=-1, yi=-1, ni=-1;
+  var expected=SP_SCHEMA.map(function(f){ return f.d; });
+  if(delim!==';'){
+    // Óskýrð komma-skrá: dálkaheiti með kommu í (t.d. "…borað, 2:pjakkað…") klofna í marga hausa.
+    // Ef hausinn er sama röð og SP_SCHEMA notum við þau heiti beint.
+    var hj=rows[0].join(',').replace(/^﻿/,'').replace(/^fid,/i,'').toLowerCase();
+    if(rows[0].length!==expected.length && hj===expected.join(',').toLowerCase()) rows[0]=expected.slice();
+  }
+  var header=rows[0].map(spCanonHeader), xi=-1, yi=-1, ni=-1;
   spImportSkipped=[]; spImportTooLong=[];
   header.forEach(function(h,i){ var n=(h||'').trim().toUpperCase(); if(n==='X') xi=i; if(n==='Y') yi=i; if(n==='NR.') ni=i; });
+  if(xi===-1 || yi===-1) return Promise.reject(new Error('Fann ekki X- og Y-dálka í haus skrárinnar. Hausar sem fundust: '+header.filter(Boolean).slice(0,12).join(' | ')));
+  // Tugatölur með þúsundaskiltákni ("401,733.92" í kommuskrá) klofna í tvo reiti - sameinum þá aftur
+  if(delim!==';') rows.slice(1).forEach(function(r){
+    [xi,yi].forEach(function(k){
+      if(r.length>header.length && /^\d{1,3}$/.test((r[k]||'').trim()) && /^\d{3}(\.\d+)?$/.test((r[k+1]||'').trim())){
+        r.splice(k,2,r[k].trim()+r[k+1].trim());
+      }
+    });
+  });
+  // X og Y: tugabrotakomma -> punktur
+  rows.slice(1).forEach(function(r){ [xi,yi].forEach(function(k){ if(r[k]!=null) r[k]=String(r[k]).trim().replace(',','.'); }); });
   return spLoadColumns().then(function(cols){
     var have={};
     (existing||[]).forEach(function(it){
