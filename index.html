@@ -163,8 +163,12 @@
       <div class="panel active" id="panel-list">
         <div class="toolbar">
           <input id="search" type="search" placeholder="Leita (nr., nafn, gerð)..." autocomplete="off">
-          <select id="sort" class="sortsel">
-            <option value="line">Línuröð</option>
+        </div>
+        <div class="toolbar">
+          <select id="kks-filter" title="Sía eftir línuheiti/KKS" style="flex:1;min-width:0"><option value="">Allar línur (KKS)</option></select>
+          <select id="sort" class="sortsel" title="Röðun">
+            <option value="line">Lengd ↑ (línuröð)</option>
+            <option value="lengd-desc">Lengd ↓</option>
             <option value="dist">Fjarlægð</option>
           </select>
         </div>
@@ -661,12 +665,31 @@ function haversine(lat1,lon1,lat2,lon2){
 }
 function fmtDist(m){ return m<1000 ? Math.round(m)+' m' : (m/1000).toFixed(1).replace('.',',')+' km'; }
 
+/* KKS-sía: valkostir koma úr gögnunum sjálfum; valið helst í tækinu */
+var LS_KKS_FILTER='jk2026_kks_filter';
+function refreshKksFilter(){
+  var sel=$('#kks-filter'); if(!sel) return '';
+  var vals={};
+  if(kksIdx!==-1) points.forEach(function(p){ var v=(getVal(p,kksIdx)||'').trim(); if(v) vals[v]=1; });
+  var names=Object.keys(vals).sort();
+  var cur=sel.dataset.ready ? sel.value : (function(){ try{ return localStorage.getItem(LS_KKS_FILTER)||''; }catch(e){ return ''; } })();
+  if(cur && !vals[cur]) cur='';
+  var sig=names.join('\u0001');
+  if(sel.dataset.sig!==sig){
+    sel.innerHTML='<option value="">Allar línur (KKS)</option>'+names.map(function(n){ return '<option value="'+esc(n)+'">'+esc(n)+'</option>'; }).join('');
+    sel.dataset.sig=sig;
+  }
+  sel.value=cur; sel.dataset.ready='1';
+  return cur;
+}
 function renderList(){
   var c=$('#list-container');
   if(!points.length){ c.innerHTML='<div class="empty">Engin gögn hlaðin.</div>'; return; }
   var q=($('#search').value||'').trim().toLowerCase();
   var sortBy=$('#sort').value;
+  var kf=refreshKksFilter();
   var list=points.filter(function(p){
+    if(kf && kksIdx!==-1 && (getVal(p,kksIdx)||'').trim()!==kf) return false;
     if(!q) return true;
     return (p.nr+' '+p.nafn+' '+p.ng+' '+p.gerd).toLowerCase().indexOf(q)!==-1;
   });
@@ -675,7 +698,14 @@ function renderList(){
       return haversine(userPos.lat,userPos.lon,a.lat,a.lon)-haversine(userPos.lat,userPos.lon,b.lat,b.lon);
     });
   } else {
-    list.sort(function(a,b){ return (a.lengd||0)-(b.lengd||0); });
+    // Lengd: punktar án lengdar fara alltaf aftast; jafnar raðast eftir Nr.
+    var dir=sortBy==='lengd-desc' ? -1 : 1;
+    list.sort(function(a,b){
+      var fa=isFinite(a.lengd), fb=isFinite(b.lengd);
+      if(fa!==fb) return fa ? -1 : 1;
+      if(fa && a.lengd!==b.lengd) return (a.lengd-b.lengd)*dir;
+      return (parseFloat(a.nr)-parseFloat(b.nr))*dir || 0;
+    });
   }
   if(!list.length){ c.innerHTML='<div class="empty">Ekkert fannst.</div>'; return; }
   c.innerHTML=list.map(function(p){
@@ -694,6 +724,10 @@ function renderList(){
   });
 }
 $('#search').addEventListener('input', renderList);
+$('#kks-filter').addEventListener('change', function(){
+  try{ localStorage.setItem(LS_KKS_FILTER,$('#kks-filter').value); }catch(e){}
+  renderList();
+});
 $('#sort').addEventListener('change', function(){
   if($('#sort').value==='dist' && !userPos) toast('GPS-staðsetning ekki þekkt ennþá');
   renderList();
@@ -1512,7 +1546,7 @@ function spFromField(col,v){
 }
 /* note verður að vera "Margar línur" - einnar-línu texti takmarkast við 255 stafi og löng lýsing myndi hafna færslu */
 var SP_EXPECTED_FACETS={ text:['text','note'], note:['note'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
-var APP_BUILD='2026-10-05-i';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
+var APP_BUILD='2026-10-05-j';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
 function spDiagnose(){
   var lines=['Útgáfa appsins: '+APP_BUILD];
   return spLoadColumns(true).then(function(by){
