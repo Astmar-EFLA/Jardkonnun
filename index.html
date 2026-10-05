@@ -1262,32 +1262,33 @@ function initMsal(){
   });
   msalInstance.initialize().then(function(){
     return msalInstance.handleRedirectPromise();
-  }).then(function(){
+  }).then(function(res){
     var accounts=msalInstance.getAllAccounts();
     if(accounts.length){ msalAccount=accounts[0]; msalInstance.setActiveAccount(msalAccount); }
     updateSpUi();
-  }).catch(function(err){ console.warn('MSAL frumstilling:',err); });
+    if(res && res.account) toast('Skráð/ur inn með Microsoft ✓');
+  }).catch(function(err){
+    console.warn('MSAL frumstilling:',err);
+    toast('Microsoft-innskráning mistókst: '+(err.errorMessage||err.message));
+  });
 }
+/* Redirect í stað popup: popup lendir aftur á appinu sjálfu (redirect URI) og
+   opnar það í nýjum glugga, auk þess sem popup eru oft læst í símum. */
 function msSignIn(){
   if(!msalInstance) return Promise.reject(new Error('MSAL ekki frumstillt'));
-  return msalInstance.loginPopup({scopes:GRAPH_SCOPES}).then(function(res){
-    msalAccount=res.account;
-    msalInstance.setActiveAccount(msalAccount);
-    updateSpUi();
-    return res;
-  });
+  return msalInstance.loginRedirect({scopes:GRAPH_SCOPES});
 }
 function msSignOut(){
   if(!msalInstance||!msalAccount) return Promise.resolve();
-  return msalInstance.logoutPopup({account:msalAccount}).then(function(){
-    msalAccount=null;
-    updateSpUi();
-  });
+  return msalInstance.logoutRedirect({account:msalAccount});
 }
 function msGetToken(){
   if(!msalInstance||!msalAccount) return Promise.reject(new Error('Ekki innskráð/ur með Microsoft'));
   return msalInstance.acquireTokenSilent({scopes:GRAPH_SCOPES,account:msalAccount})
-    .catch(function(){ return msalInstance.acquireTokenPopup({scopes:GRAPH_SCOPES}); })
+    .catch(function(){
+      msalInstance.acquireTokenRedirect({scopes:GRAPH_SCOPES,account:msalAccount});
+      return new Promise(function(){});
+    })
     .then(function(res){ return res.accessToken; });
 }
 function updateSpUi(){
@@ -1390,8 +1391,8 @@ function spPhotoBlobUrl(fileName){
   });
 }
 $('#sp-signin').addEventListener('click',function(){
-  msSignIn().then(function(){ toast('Skráð/ur inn með Microsoft ✓'); })
-    .catch(function(err){ console.warn('Innskráning mistókst:',err); toast('Innskráning mistókst: '+err.message); });
+  toast('Fer á Microsoft-innskráningu...');
+  msSignIn().catch(function(err){ console.warn('Innskráning mistókst:',err); toast('Innskráning mistókst: '+(err.errorMessage||err.message)); });
 });
 $('#sp-signout').addEventListener('click',function(){ msSignOut(); });
 $('#sp-provision').addEventListener('click',function(){
