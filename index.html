@@ -2678,7 +2678,7 @@ function renderMapMarkers(){
       +'<br>'+(st==='green'?'Lokið':st==='amber'?'Í vinnslu':'Óskráð')
       +'<br><button onclick="openForm(\''+esc(p.fid)+'\')">Skrá →</button>'
       +'<a class="gm" href="'+gm+'" target="_blank" rel="noopener noreferrer">Leið</a>');
-    m.bindTooltip(esc(p.nr||p.nafn||p.fid),{permanent:true,direction:'top',offset:[0,-7],className:'pt-label'});
+    m.bindTooltip(esc((p.nafn && p.nafn!=='-') ? p.nafn : (p.nr||p.fid)),{permanent:true,direction:'top',offset:[0,-7],className:'pt-label'});
     m.addTo(markerLayer);
     p.marker=m;
     latlngs.push([p.lat,p.lon]);
