@@ -1282,11 +1282,12 @@ function msSignOut(){
   if(!msalInstance||!msalAccount) return Promise.resolve();
   return msalInstance.logoutRedirect({account:msalAccount});
 }
-function msGetToken(){
+function msGetToken(scopes){
   if(!msalInstance||!msalAccount) return Promise.reject(new Error('Ekki innskráð/ur með Microsoft'));
-  return msalInstance.acquireTokenSilent({scopes:GRAPH_SCOPES,account:msalAccount})
+  var sc=scopes||GRAPH_SCOPES;
+  return msalInstance.acquireTokenSilent({scopes:sc,account:msalAccount})
     .catch(function(){
-      msalInstance.acquireTokenRedirect({scopes:GRAPH_SCOPES,account:msalAccount});
+      msalInstance.acquireTokenRedirect({scopes:sc,account:msalAccount});
       return new Promise(function(){});
     })
     .then(function(res){ return res.accessToken; });
@@ -1318,7 +1319,7 @@ function updateSpUi(){
 /* ---------- Graph API: grunnköll ---------- */
 function graphFetch(path,opts){
   opts=opts||{};
-  return msGetToken().then(function(token){
+  return msGetToken(opts.scopes).then(function(token){
     var headers=Object.assign({'Authorization':'Bearer '+token},opts.headers||{});
     var url=path.indexOf('http')===0 ? path : GRAPH_BASE+path;
     return fetch(url,Object.assign({},opts,{headers:headers}));
@@ -1340,8 +1341,9 @@ function spEnsureList(){
         var existing=(data.value||[]).filter(function(l){ return l.displayName===SP_LIST_NAME||l.name===SP_LIST_NAME; })[0];
         if(existing){ spListId=existing.id; return spListId; }
         var body={ displayName:SP_LIST_NAME, list:{template:'genericList'}, columns:SP_SCHEMA.map(spTypeToColumnDef) };
-        return graphFetch('/sites/'+siteId+'/lists',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-          .then(function(r){ if(!r.ok) return r.text().then(function(t){ throw new Error('HTTP '+r.status+' við stofnun lista: '+t); }); return r.json(); })
+        // Að stofna lista krefst Sites.Manage.All (ReadWrite.All dugar ekki) - beðið um hana aðeins hér
+        return graphFetch('/sites/'+siteId+'/lists',{method:'POST',scopes:['Sites.Manage.All'],headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+          .then(function(r){ if(!r.ok) return r.text().then(function(t){ throw new Error('HTTP '+r.status+' við stofnun lista'+(r.status===403?' (vantar líklega Sites.Manage.All heimild)':'')+': '+t.slice(0,200)); }); return r.json(); })
           .then(function(list){ spListId=list.id; return spListId; });
       });
   });
