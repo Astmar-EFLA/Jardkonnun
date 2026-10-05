@@ -1391,6 +1391,7 @@ function spLoadColumns(force){
   }).then(function(list){
     var by={};
     list.forEach(function(c){
+      if(c.readOnly) return;   // t.d. LinkTitle: skrifvarin afrit af Title með sama birta heiti
       by[c.displayName]={ name:c.name, displayName:c.displayName, facet:spFacet(c),
         choices:(c.choice&&c.choice.choices)||[], allowTextEntry:!!(c.choice&&c.choice.allowTextEntry) };
     });
@@ -1474,7 +1475,10 @@ function spBuildFields(cols,header,row,defaultKks){
   });
   var kks=cols['Línuheiti/KKS'];
   if(kks && f[kks.name]===undefined && defaultKks) f[kks.name]=defaultKks;
-  f.Title = nr + (nafn && nafn!=='-' ? ' '+nafn : '') || 'punktur';   // Title er innbyggður; sett svo hann trufli ekki
+  // Title er innbyggður. Ef hann er notaður sem "Nr." (Excel-innflutningur) má ekki yfirskrifa hann;
+  // annars er hann settur svo hann trufli ekki (skyldudálkur).
+  var titleIsMapped=SP_SCHEMA.some(function(s){ return cols[s.d] && cols[s.d].name==='Title'; });
+  if(!titleIsMapped) f.Title = nr + (nafn && nafn!=='-' ? ' '+nafn : '') || 'punktur';
   return f;
 }
 function spBatchCreate(fieldsList,onProgress){
