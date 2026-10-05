@@ -1512,7 +1512,7 @@ function spFromField(col,v){
 }
 /* note verður að vera "Margar línur" - einnar-línu texti takmarkast við 255 stafi og löng lýsing myndi hafna færslu */
 var SP_EXPECTED_FACETS={ text:['text','note'], note:['note'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
-var APP_BUILD='2026-10-05-h';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
+var APP_BUILD='2026-10-05-i';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
 function spDiagnose(){
   var lines=['Útgáfa appsins: '+APP_BUILD];
   return spLoadColumns(true).then(function(by){
@@ -2310,6 +2310,18 @@ function showPanel(which){
   }
 }
 var map=null, markerLayer=null, layersControl=null, mapInited=false, userMarker=null, accCircle=null, mapFitted=false;
+var locatePending=false;
+/* Færir kortið á staðsetningu símans; ef engin staðsetning er komin bíður það eftir fyrstu mælingu */
+function zoomToMe(userAsked){
+  if(!mapInited) return;
+  if(userPos){
+    locatePending=false;
+    map.setView([userPos.lat,userPos.lon],Math.max(map.getZoom(),16));
+  } else if(userAsked){
+    locatePending=true;
+    toast('Bíð eftir GPS-staðsetningu… (leyfðu staðsetningu í vafranum)');
+  }
+}
 function initMap(){
   if(mapInited) return;
   if(typeof L==='undefined'){ $('#map').innerHTML='<div style="padding:24px;color:var(--muted);text-align:center">Leaflet hlóðst ekki — athugaðu nettengingu.</div>'; return; }
@@ -2323,6 +2335,19 @@ function initMap(){
   map.createPane('pointsPane');
   map.getPane('pointsPane').style.zIndex=450;
   markerLayer=L.layerGroup().addTo(map);
+  var LocateCtl=L.Control.extend({
+    options:{position:'topleft'},
+    onAdd:function(){
+      var box=L.DomUtil.create('div','leaflet-bar leaflet-control');
+      var a=L.DomUtil.create('a','',box);
+      a.href='#'; a.title='Færa kort á mína staðsetningu'; a.setAttribute('role','button'); a.setAttribute('aria-label','Færa kort á mína staðsetningu');
+      a.innerHTML='◎'; a.style.cssText='font-size:20px;line-height:30px;text-align:center;font-weight:bold';
+      L.DomEvent.disableClickPropagation(box);
+      L.DomEvent.on(a,'click',function(ev){ L.DomEvent.preventDefault(ev); zoomToMe(true); });
+      return box;
+    }
+  });
+  new LocateCtl().addTo(map);
   map.on('zoomend', updateMapLabels);
   mapInited=true;
   loadLineLayers();
@@ -2709,6 +2734,7 @@ if('geolocation' in navigator){
         accCircle.setLatLng([userPos.lat,userPos.lon]);
         accCircle.setRadius(pos.coords.accuracy);
       }
+      if(locatePending) zoomToMe(false);
     }
   },function(err){
     console.warn('GPS:',err.message);
