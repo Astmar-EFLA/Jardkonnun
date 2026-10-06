@@ -105,6 +105,10 @@
   .ph-remote-placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;aspect-ratio:1;border:1px dashed var(--line);border-radius:10px;color:var(--muted);font-size:22px;cursor:pointer;background:var(--surface)}
   .ph-remote-placeholder small{font-size:9px;letter-spacing:.06em;margin-top:3px;text-align:center;padding:0 4px}
   .add-photo small{font-size:10px;letter-spacing:.06em}
+  #audio-block .aud{margin-top:10px;padding:8px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+  #audio-block .aud .nm{font-size:11px;color:var(--muted);font-family:var(--mono);word-break:break-all;margin-bottom:6px}
+  #audio-block .aud audio{width:100%;height:36px}
+  #audio-block .aud-del{background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px}
 
   header .spacer{flex:1}
   .icon-btn{background:none;border:1px solid var(--line);color:var(--text);width:40px;height:40px;border-radius:8px;font-size:18px;cursor:pointer;flex:0 0 auto}
@@ -773,6 +777,10 @@ function openForm(fid){
       html+='<label>'+esc(f.name)+'</label>'
         +'<div class="photos" id="photo-block"></div>'
         +'<div class="hint">Myndir fá heiti línu/KKS + punktsins og hlaupandi númer, GPS-hnit skrifast í myndina. Þær hlaðast sjálfkrafa upp í myndaskýi og slóðin vistast í CSV-dálkinn.</div>';
+      if(dataMode()==='sharepoint'){
+        html+='<label style="margin-top:14px">Hljóðskrá</label><div id="audio-block"></div>'
+          +'<div class="hint">Hljóðbútar fá heiti línu/KKS + punktsins og hlaupandi númer og vistast í SharePoint (hljodskrar).</div>';
+      }
       return;
     }
     html+=wrapOpen+'<label for="'+id+'">'+esc(f.name)+'</label>';
@@ -828,6 +836,7 @@ function openForm(fid){
   });
   $('#f-done').checked = (getVal(p,doneIdx)||'').trim()!=='';
   renderPhotoBlock(p);
+  renderAudioBlock(p);
   show('form');
   window.scrollTo(0,0);
 }
@@ -855,6 +864,7 @@ function show(view){
   document.body.classList.toggle('view-form-active', view==='form');
 }
 function backToList(){
+  if(audioRec) stopAudioRecording();       // vistar upptökuna á punktinn sem hún var tekin á
   renderList(); updateProgress(); if(mapInited)renderMapMarkers(); show('list');
   if(dataMode()==='sharepoint') spQueuePush(300);
 }
@@ -1193,6 +1203,135 @@ $('#photo-input').addEventListener('change', function(e){
     })
     .catch(function(err){ console.error('Myndvistun:',err); toast('Vistun myndar mistókst'); });
 });
+
+/* ---------- Hljóðupptökur (SharePoint: hljodskrar/) ----------
+   Hver upptaka fær heiti <KKS>-<punktur>_hljod_<nr>.m4a|webm, er geymd í tækinu (IndexedDB 'files',
+   kind 'audio') þar til hún hefur verið send, og birtist svo áfram á punktinum úr SharePoint-möppunni. */
+var SP_AUDIO_FOLDER='hljodskrar';
+var audioRec=null;                       // { rec, stream, chunks, fid, name, mime, startedAt, timer }
+function audioPrefix(p){
+  var kksVal = kksIdx!==-1 ? (getVal(p,kksIdx)||currentKks||'') : (currentKks||'');
+  return (kksVal?sanitizeName(kksVal)+'-':'')+sanitizeName(displayName(p))+'_hljod_';
+}
+function audioMime(){
+  if(typeof MediaRecorder==='undefined') return null;
+  var list=[['audio/mp4','m4a'],['audio/webm;codecs=opus','webm'],['audio/webm','webm'],['audio/ogg;codecs=opus','ogg']];
+  for(var i=0;i<list.length;i++){ if(MediaRecorder.isTypeSupported(list[i][0])) return {type:list[i][0],ext:list[i][1]}; }
+  return {type:'',ext:'webm'};
+}
+function fmtSecs(s){ s=Math.floor(s); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); }
+function remoteAudioFor(p){
+  if(!msalAccount || !navigator.onLine) return Promise.resolve([]);
+  var pre=audioPrefix(p);
+  return spListFolder(SP_AUDIO_FOLDER).then(function(items){
+    return items.filter(function(it){ return it.file && it.name.indexOf(pre)===0; });
+  }).catch(function(){ return []; });
+}
+var audioUrls={};
+function renderAudioBlock(p){
+  var block=document.getElementById('audio-block');
+  if(!block || currentFid!==p.fid) return;
+  var pre=audioPrefix(p);
+  Promise.all([idbAllFiles(),remoteAudioFor(p)]).then(function(res){
+    if(currentFid!==p.fid || !document.getElementById('audio-block')) return;
+    var local=res[0].filter(function(f){ return f.kind==='audio' && f.fid===p.fid; }).sort(function(a,b){ return a.createdAt-b.createdAt; });
+    var localNames={}; local.forEach(function(f){ localNames[f.name]=true; });
+    var remote=res[1].filter(function(it){ return !localNames[it.name]; });
+    var recording=audioRec && audioRec.fid===p.fid;
+    var html='<div class="aud-rec"><button type="button" class="btn '+(recording?'btn-primary':'btn-ghost')+'" id="aud-btn">'
+      +(recording?'■ Stoppa upptöku (<span id="aud-time">0:00</span>)':'🎙 Taka upp hljóð')+'</button></div>';
+    html+=local.map(function(f){
+      if(!audioUrls[f.id]) audioUrls[f.id]=URL.createObjectURL(f.blob);
+      return '<div class="aud"><div class="nm">'+esc(f.name)+(f.uploaded?' · ☁︎':' · ekki uploadað')
+        +(f.uploaded?'':' <button type="button" class="aud-del" data-aid="'+esc(f.id)+'" aria-label="Eyða upptöku">✕</button>')+'</div>'
+        +'<audio controls preload="none" src="'+audioUrls[f.id]+'"></audio></div>';
+    }).join('');
+    html+=remote.map(function(it){
+      return '<div class="aud" data-rname="'+esc(it.name)+'"><div class="nm">'+esc(it.name)+' · ☁︎ SharePoint</div>'
+        +'<button type="button" class="btn btn-ghost aud-play" style="padding:6px 10px;width:auto">▶ Sækja og spila</button></div>';
+    }).join('');
+    block.innerHTML=html;
+    document.getElementById('aud-btn').onclick=function(){ audioRec ? stopAudioRecording() : startAudioRecording(p); };
+    block.querySelectorAll('.aud-del').forEach(function(b){
+      b.onclick=function(){ idbDelFile(b.dataset.aid).then(function(){ renderAudioBlock(p); toast('Upptöku eytt'); }); };
+    });
+    block.querySelectorAll('.aud-play').forEach(function(b){
+      b.onclick=function(){
+        var wrap=b.parentNode, name=wrap.dataset.rname;
+        b.textContent='Sæki...';
+        spDownloadBlob(SP_AUDIO_FOLDER,name).then(function(blob){
+          var a=document.createElement('audio'); a.controls=true; a.src=URL.createObjectURL(blob);
+          wrap.replaceChild(a,b); a.play().catch(function(){});
+        }).catch(function(err){ console.warn('Hljóð:',err); b.textContent='Ekki tiltækt - reyna aftur'; });
+      };
+    });
+    if(recording) tickAudioTimer();
+  });
+}
+function tickAudioTimer(){
+  var el=document.getElementById('aud-time');
+  if(el && audioRec) el.textContent=fmtSecs((Date.now()-audioRec.startedAt)/1000);
+}
+function startAudioRecording(p){
+  var mt=audioMime();
+  if(!mt || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ toast('Vafrinn styður ekki hljóðupptöku'); return; }
+  navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
+    var rec=mt.type ? new MediaRecorder(stream,{mimeType:mt.type}) : new MediaRecorder(stream);
+    var chunks=[];
+    rec.ondataavailable=function(e){ if(e.data && e.data.size) chunks.push(e.data); };
+    audioRec={rec:rec,stream:stream,chunks:chunks,fid:p.fid,ext:mt.ext,startedAt:Date.now(),p:p,
+              timer:setInterval(tickAudioTimer,500)};
+    var cur=audioRec;
+    rec.onstop=function(){
+      clearInterval(cur.timer);
+      cur.stream.getTracks().forEach(function(t){ t.stop(); });
+      if(audioRec===cur) audioRec=null;
+      var blob=new Blob(cur.chunks,{type:rec.mimeType||mt.type||'audio/webm'});
+      if(!blob.size){ toast('Upptakan er tóm'); renderAudioBlock(cur.p); return; }
+      saveAudioRecording(cur.p,blob,cur.ext);
+    };
+    rec.start(1000);
+    renderAudioBlock(p);
+  }).catch(function(err){
+    console.warn('Hljóðnemi:',err);
+    toast('Fékk ekki aðgang að hljóðnema - leyfðu hann í vafranum');
+  });
+}
+function stopAudioRecording(){
+  if(audioRec && audioRec.rec.state!=='inactive') audioRec.rec.stop();
+}
+function saveAudioRecording(p,blob,ext){
+  Promise.all([idbAllFiles(),remoteAudioFor(p)]).then(function(res){
+    var pre=audioPrefix(p), max=0;
+    res[0].map(function(f){ return f.kind==='audio' ? f.name : ''; }).concat(res[1].map(function(it){ return it.name; })).forEach(function(n){
+      if(n.indexOf(pre)!==0) return;
+      var m=n.slice(pre.length).match(/^(\d+)\./); if(m) max=Math.max(max,parseInt(m[1],10));
+    });
+    var name=pre+(max+1)+'.'+ext;
+    return idbPutFile({id:'audio:'+p.fid+':'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),kind:'audio',fid:p.fid,name:name,blob:blob,uploaded:false,createdAt:Date.now()})
+      .then(function(){ toast('Upptaka vistuð: '+name); renderAudioBlock(p); return uploadPendingAudio(); });
+  }).catch(function(err){ console.error('Hljóðvistun:',err); toast('Vistun upptöku mistókst'); });
+}
+var audioUploading=false;
+function uploadPendingAudio(){
+  if(audioUploading || !db || !msalAccount || dataMode()!=='sharepoint') return Promise.resolve();
+  audioUploading=true;
+  return idbAllFiles().then(function(all){
+    var chain=Promise.resolve(), sent=0;
+    all.filter(function(f){ return f.kind==='audio' && !f.uploaded; }).forEach(function(f){
+      chain=chain.then(function(){
+        return spUploadFile(SP_AUDIO_FOLDER,f.name,f.blob).then(function(){ f.uploaded=true; sent++; return idbPutFile(f); })
+          .catch(function(err){ console.warn('Hljóð '+f.name+' - upphal mistókst:',err); });
+      });
+    });
+    return chain.then(function(){ if(sent){ toast(sent+(sent===1?' upptaka vistuð':' upptökur vistaðar')+' í SharePoint ✓'); renderAudioBlockIfOpen(); } });
+  }).catch(function(e){ console.warn('Hljóðupphal:',e); }).finally(function(){ audioUploading=false; });
+}
+function renderAudioBlockIfOpen(){
+  if(!currentFid) return;
+  var p=points.filter(function(x){return x.fid===currentFid;})[0];
+  if(p) renderAudioBlock(p);
+}
 
 /* ---------- Zip-útflutningur mynda (store, engin þjöppun) ---------- */
 var CRC_T=(function(){ var t=[],c,n,k; for(n=0;n<256;n++){ c=n; for(k=0;k<8;k++) c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1); t[n]=c>>>0; } return t; })();
@@ -1541,7 +1680,7 @@ function spFromField(col,v){
 }
 /* note verður að vera "Margar línur" - einnar-línu texti takmarkast við 255 stafi og löng lýsing myndi hafna færslu */
 var SP_EXPECTED_FACETS={ text:['text','note'], note:['note'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
-var APP_BUILD='2026-10-06-a';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
+var APP_BUILD='2026-10-06-b';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
 function spDiagnose(){
   var lines=['Útgáfa appsins: '+APP_BUILD];
   return spLoadColumns(true).then(function(by){
@@ -1941,6 +2080,7 @@ function spQueueUpload(folder,name,blob){
 function spFlushUploads(){
   if(spFlushing || !db || !msalAccount || dataMode()!=='sharepoint') return Promise.resolve(0);
   uploadPendingPhotos(true);                         // myndir bíða líka eftir neti/innskráningu
+  uploadPendingAudio();                              // og hljóðupptökur
   spFlushing=true;
   var sent=0;
   return idbAllFiles().then(function(all){
