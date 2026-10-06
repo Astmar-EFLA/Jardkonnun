@@ -221,12 +221,7 @@
   <input id="kks-input" list="kks-list" placeholder="t.d. BLA3" autocomplete="off">
   <datalist id="kks-list"></datalist>
   <div class="hint">Notað til að merkja skráða punkta og ljósmyndir sjálfkrafa.</div>
-  <label for="photo-quality">Myndgæði</label>
-  <select id="photo-quality">
-    <option value="std">2048px (mælt með)</option>
-    <option value="orig">Upprunaleg stærð</option>
-  </select>
-  <div class="hint">Upprunaleg stærð gefur skarpari myndir en stærri skrár - hægara upphal á lélegu sambandi úti á vettvangi.</div>
+  <div class="hint">Myndir eru vistaðar í upprunalegri stærð (engin smækkun). Skrárnar eru stærri, svo upphal getur verið hægara á lélegu sambandi.</div>
   <div class="done-row" style="margin-top:14px">
     <input type="checkbox" id="save-original">
     <span>Bjóða að vista frumeintak í fullri upplausn á tækinu</span>
@@ -312,7 +307,7 @@ var LS_CSV = 'jk2026_csv';
 var LS_EDITS = 'jk2026_edits';
 var LS_KKS = 'jk2026_kks';
 var LS_PHOTO_QUALITY = 'jk2026_photoq';
-function getPhotoQuality(){ try{ return localStorage.getItem(LS_PHOTO_QUALITY)||'std'; }catch(e){ return 'std'; } }
+function getPhotoQuality(){ return 'orig'; }   // engin smækkun mynda lengur (áður valkostur: 2048px)
 var LS_MODE = 'jk2026_mode';
 /* 'github' = CSV á GitHub (eldri leið, sjálfgefið) | 'sharepoint' = SharePoint-listi. SharePoint krefst Client ID. */
 function dataMode(){ try{ return (localStorage.getItem(LS_MODE)==='sharepoint' && spConfigured()) ? 'sharepoint' : 'github'; }catch(e){ return 'github'; } }
@@ -1546,7 +1541,7 @@ function spFromField(col,v){
 }
 /* note verður að vera "Margar línur" - einnar-línu texti takmarkast við 255 stafi og löng lýsing myndi hafna færslu */
 var SP_EXPECTED_FACETS={ text:['text','note'], note:['note'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
-var APP_BUILD='2026-10-05-j';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
+var APP_BUILD='2026-10-06-a';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
 function spDiagnose(){
   var lines=['Útgáfa appsins: '+APP_BUILD];
   return spLoadColumns(true).then(function(by){
@@ -2250,7 +2245,6 @@ function syncToGitHub(push,isRetry){
 function openSettingsDialog(){
   var cfg=ghCfg()||{};
   populateKksField();
-  $('#photo-quality').value=getPhotoQuality();
   $('#save-original').checked=getSaveOriginal();
   $('#gh-repo').value=cfg.repo||'';
   $('#gh-path').value=cfg.path||'Jardkonnun2026_central.csv';
@@ -2265,9 +2259,6 @@ function openSettingsDialog(){
 $('#hdr-sub').addEventListener('click', openSettingsDialog);
 $('#kks-input').addEventListener('change',function(){
   saveKks($('#kks-input').value);
-});
-$('#photo-quality').addEventListener('change',function(){
-  try{ localStorage.setItem(LS_PHOTO_QUALITY, $('#photo-quality').value); }catch(e){}
 });
 $('#save-original').addEventListener('change',function(){
   try{ localStorage.setItem(LS_SAVE_ORIGINAL, $('#save-original').checked?'1':'0'); }catch(e){}
