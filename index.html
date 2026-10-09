@@ -90,7 +90,10 @@
   .done-row input[type=checkbox]{width:22px;height:22px;flex:0 0 auto;accent-color:var(--green)}
   .done-row span{font-weight:600}
 
-  #map{height:62vh;min-height:340px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface)}
+  #map{height:calc(100vh - 170px);height:calc(100dvh - 170px);min-height:340px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface)}
+  .map-legend{background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:8px;font-size:12px;line-height:1.5;box-shadow:0 1px 4px rgba(0,0,0,.4)}
+  .map-legend-btn{display:block;width:30px;height:30px;line-height:30px;text-align:center;font-size:18px;color:var(--text)!important;text-decoration:none}
+  .map-legend-body{padding:6px 10px 8px;max-width:190px;border-top:1px solid var(--line)}
   .leaflet-popup-content{font-family:var(--sans);font-size:13px;line-height:1.5}
   .leaflet-popup-content button,.leaflet-popup-content a.gm{display:inline-block;background:var(--red);color:#fff !important;border:none;border-radius:6px;padding:6px 10px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;margin-top:4px;margin-right:6px}
   .leaflet-container{font-family:var(--sans)}
@@ -180,7 +183,6 @@
       </div>
       <div class="panel" id="panel-map">
         <div id="map"></div>
-        <div class="hint" style="margin-top:10px">Grár = óskráð · gulur = í vinnslu · grænn = lokið. Númer birtast þegar zoomað er inn.</div>
         <button class="btn btn-ghost" id="btn-layers" style="margin-top:10px">⬆ Bæta við lagi (shapefile-zip / GeoJSON)</button>
         <div class="hint" style="margin-top:6px">Zip þarf að innihalda .shp og .dbf (helst líka .prj). Lagið vistast í tækinu og hægt er að kveikja/slökkva á því í lagavalinu á kortinu.</div>
         <div id="layer-list"></div>
@@ -1680,7 +1682,7 @@ function spFromField(col,v){
 }
 /* note verður að vera "Margar línur" - einnar-línu texti takmarkast við 255 stafi og löng lýsing myndi hafna færslu */
 var SP_EXPECTED_FACETS={ text:['text','note'], note:['note'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
-var APP_BUILD='2026-10-09-b';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
+var APP_BUILD='2026-10-09-c';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
 function spDiagnose(){
   var lines=['Útgáfa appsins: '+APP_BUILD];
   return spLoadColumns(true).then(function(by){
@@ -2534,6 +2536,26 @@ function initMap(){
     }
   });
   new LocateCtl().addTo(map);
+  /* Skýringar: lítill ⓘ-hnappur sem opnast við snertingu og lokast sjálfur - tekur ekki pláss af kortinu */
+  var LegendCtl=L.Control.extend({
+    options:{position:'bottomleft'},
+    onAdd:function(){
+      var box=L.DomUtil.create('div','map-legend');
+      var btn=L.DomUtil.create('a','map-legend-btn',box);
+      btn.href='#'; btn.title='Skýringar'; btn.setAttribute('role','button'); btn.setAttribute('aria-label','Skýringar'); btn.textContent='ⓘ';
+      var body=L.DomUtil.create('div','map-legend-body',box);
+      function dot(c){ return '<span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:'+c+';border:1.5px solid #fff;margin-right:6px;vertical-align:-1px"></span>'; }
+      body.innerHTML='<div>'+dot(statusColor('grey'))+'Óskráð</div><div>'+dot(statusColor('amber'))+'Í vinnslu</div><div>'+dot(statusColor('green'))+'Lokið</div>'
+        +'<div style="margin-top:4px;color:var(--muted)">Númer birtast þegar zoomað er inn.</div>';
+      body.style.display='none';
+      var t=null;
+      function setOpen(o){ clearTimeout(t); body.style.display=o?'block':'none'; if(o) t=setTimeout(function(){ setOpen(false); },7000); }
+      L.DomEvent.disableClickPropagation(box);
+      L.DomEvent.on(btn,'click',function(ev){ L.DomEvent.preventDefault(ev); setOpen(body.style.display==='none'); });
+      return box;
+    }
+  });
+  new LegendCtl().addTo(map);
   map.on('zoomend', updateMapLabels);
   mapInited=true;
   loadLineLayers();
