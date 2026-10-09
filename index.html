@@ -1680,7 +1680,7 @@ function spFromField(col,v){
 }
 /* note verður að vera "Margar línur" - einnar-línu texti takmarkast við 255 stafi og löng lýsing myndi hafna færslu */
 var SP_EXPECTED_FACETS={ text:['text','note'], note:['note'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
-var APP_BUILD='2026-10-09-a';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
+var APP_BUILD='2026-10-09-b';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
 function spDiagnose(){
   var lines=['Útgáfa appsins: '+APP_BUILD];
   return spLoadColumns(true).then(function(by){
@@ -2130,6 +2130,19 @@ function spLayerBytes(item){
     });
   });
 }
+/* PDF-kort eru sótt í bakgrunni (og geymd í tækinu) svo þau séu tilbúin ónettengd úti á vettvangi.
+   Sleppt ef notandi er með gagnasparnað eða hæga tengingu. Aðeins sótt ef ný eða breytt (eTag). */
+function spPrefetchPdfs(pdfs){
+  var c=navigator.connection;
+  if(!pdfs.length || !navigator.onLine) return;
+  if(c && (c.saveData || /^(slow-2g|2g|3g)$/.test(c.effectiveType||''))) return;
+  setTimeout(function(){
+    pdfs.reduce(function(p,it){
+      return p.then(function(){ return spLayerBytes(it); }).then(function(){ return null; })
+        .catch(function(err){ console.warn('Forsókn PDF '+it.name+':',err); });
+    },Promise.resolve()).then(function(){ console.log('PDF-kort tilbúin ónettengd:',pdfs.length); });
+  },4000);
+}
 var spLayersLoading=false;
 function spLoadMapLayers(){
   if(dataMode()!=='sharepoint' || !map || spLayersLoading) return Promise.resolve();
@@ -2138,6 +2151,7 @@ function spLoadMapLayers(){
     if(!msalAccount) return;
     return spListFolder(SP_SHP_FOLDER).then(function(items){
       var files=items.filter(function(it){ return it.file && /\.(zip|geojson|json|pdf)$/i.test(it.name); });
+      spPrefetchPdfs(files.filter(function(it){ return /\.pdf$/i.test(it.name); }));
       return files.reduce(function(p,it){
         if(/\.pdf$/i.test(it.name)){                              // PDF-kort sótt (og teiknað) fyrst þegar kveikt er á þeim
           addPdfLayer(it.name,function(){ return spLayerBytes(it); });
