@@ -193,6 +193,10 @@
         <div id="map"></div>
         <button class="btn btn-ghost" id="btn-layers" style="margin-top:10px">⬆ Bæta við lagi (shapefile-zip / GeoJSON)</button>
         <div class="hint" style="margin-top:6px">Zip þarf að innihalda .shp og .dbf (helst líka .prj). Kveikt/slökkt er á lögum í lagavalinu á kortinu (⧉); litir, gegnsæi og fela lag eru í ⓘ-hnappinum á kortinu.</div>
+        <div class="row" style="margin-top:10px">
+          <button class="btn btn-ghost" id="btn-wpt-take">📍 Taka punkt</button>
+          <button class="btn btn-ghost" id="btn-wpt-export">⬇ Punktar (0)</button>
+        </div>
         <button class="btn btn-ghost" id="btn-track-toggle" style="margin-top:10px">▶ Byrja að rekja GPS-slóð</button>
         <div class="hint" id="track-hint" style="margin-top:6px">Skráir slóðina þína á meðan gengið/ekið er línuna og vistar sem shapefile (.zip) þegar hætt er.</div>
         <div class="row" id="track-clear-row" style="display:none;margin-top:0">
@@ -297,6 +301,19 @@
   </div>
   <input type="file" id="sp-import-input" style="display:none">
   <div class="hint" id="sp-status" style="margin-top:8px;white-space:pre-wrap;word-break:break-word"></div>
+</dialog>
+
+<dialog id="dlg-wpt">
+  <h2 style="margin-top:0" id="wpt-title">Nýr punktur</h2>
+  <div class="hint" id="wpt-pos"></div>
+  <label for="wpt-name">Heiti</label>
+  <input id="wpt-name" autocomplete="off" placeholder="t.d. Brú, Skurður, Aðkoma">
+  <label for="wpt-comment">Athugasemd</label>
+  <textarea id="wpt-comment" rows="4" placeholder="Valfrjáls athugasemd"></textarea>
+  <div class="row" style="margin-top:14px">
+    <button class="btn btn-ghost" id="wpt-cancel" type="button">Hætta við</button>
+    <button class="btn btn-primary" id="wpt-save" type="button">Vista</button>
+  </div>
 </dialog>
 
 <div class="toast" id="toast"></div>
@@ -1690,7 +1707,7 @@ function spFromField(col,v){
 }
 /* note verður að vera "Margar línur" - einnar-línu texti takmarkast við 255 stafi og löng lýsing myndi hafna færslu */
 var SP_EXPECTED_FACETS={ text:['text','note'], note:['note'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
-var APP_BUILD='2026-10-09-f';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
+var APP_BUILD='2026-10-09-g';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
 function spDiagnose(){
   var lines=['Útgáfa appsins: '+APP_BUILD];
   return spLoadColumns(true).then(function(by){
@@ -1924,6 +1941,7 @@ function spStartup(){
     return spReload(true).then(function(ok){
       if(!ok && !haveCache) spShowRetryEmpty();
       spQueuePush(800);                                          // senda óvistaðar breytingar frá ónettengdri notkun
+      try{ if(localStorage.getItem('jk2026_wpt_dirty')) syncWpts(); }catch(e){}   // punktar teknir áður en innskráð var
       spFlushUploads();                                          // myndir, slóðir og lög sem biðu
     });
   });
@@ -2111,8 +2129,9 @@ function spPhotoBlobUrl(name){
 
 /* ---------- Biðröð skráa sem á eftir að hlaða upp (t.d. GPS-slóðir teknar án nets) ---------- */
 var spFlushing=false;
-function spQueueUpload(folder,name,blob){
-  var rec={id:'up:'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),kind:'upload',folder:folder,name:name,blob:blob,createdAt:Date.now()};
+/* key (valkvætt): ný skrá með sama lykli leysir þá eldri af hólmi í biðröðinni (t.d. punktaskrá sem er endurskrifuð) */
+function spQueueUpload(folder,name,blob,key){
+  var rec={id:'up:'+(key||Date.now().toString(36)+Math.random().toString(36).slice(2,6)),kind:'upload',folder:folder,name:name,blob:blob,createdAt:Date.now()+Math.random()};
   return idbPutFile(rec).then(function(){ return spFlushUploads(); });
 }
 function spFlushUploads(){
@@ -2120,19 +2139,27 @@ function spFlushUploads(){
   uploadPendingPhotos(true);                         // myndir bíða líka eftir neti/innskráningu
   uploadPendingAudio();                              // og hljóðupptökur
   spFlushing=true;
-  var sent=0;
+  var sent=0, flushStart=Date.now();
   return idbAllFiles().then(function(all){
     var pending=all.filter(function(f){ return f.kind==='upload'; }), chain=Promise.resolve();
     pending.forEach(function(f){
       chain=chain.then(function(){
-        return spUploadFile(f.folder,f.name,f.blob).then(function(){ sent++; return idbDelFile(f.id); })
+        return spUploadFile(f.folder,f.name,f.blob).then(function(){
+          sent++;
+          // Ef skráin var endurskrifuð í biðröðinni á meðan (sami lykill) má ekki eyða nýju útgáfunni
+          return idbGetFile(f.id).then(function(cur){ if(cur && cur.createdAt===f.createdAt) return idbDelFile(f.id); });
+        })
           .catch(function(err){ console.warn('Upphal '+f.name+' mistókst (reynt aftur síðar):',err); });
       });
     });
     return chain;
   }).then(function(){ if(sent) toast(sent+(sent===1?' skrá vistuð':' skrár vistaðar')+' í SharePoint ✓'); return sent; })
     .catch(function(err){ console.warn('Upphalsbiðröð:',err); return 0; })
-    .finally(function(){ spFlushing=false; });
+    .finally(function(){
+      spFlushing=false;
+      // Nýtt í biðröð á meðan sent var? Þá aftur.
+      idbAllFiles().then(function(all){ if(all.some(function(f){ return f.kind==='upload' && f.createdAt>flushStart; })) spFlushUploads(); });
+    });
 }
 window.addEventListener('online',function(){ spFlushUploads(); });
 document.addEventListener('visibilitychange',function(){ if(!document.hidden) spFlushUploads(); });
@@ -2594,6 +2621,28 @@ function initMap(){
     }
   });
   new FullCtl().addTo(map);
+  var WptCtl=L.Control.extend({
+    options:{position:'topleft'},
+    onAdd:function(){
+      var box=L.DomUtil.create('div','leaflet-bar leaflet-control');
+      var a=L.DomUtil.create('a','',box);
+      a.href='#'; a.title='Taka punkt á minni staðsetningu'; a.setAttribute('role','button'); a.setAttribute('aria-label','Taka punkt'); a.innerHTML='📍';
+      a.style.cssText='font-size:16px;line-height:30px;text-align:center';
+      L.DomEvent.disableClickPropagation(box);
+      L.DomEvent.on(a,'click',function(ev){ L.DomEvent.preventDefault(ev); takeWaypoint(); });
+      return box;
+    }
+  });
+  new WptCtl().addTo(map);
+  wptLayer=L.layerGroup().addTo(map);
+  layersControl.addOverlay(wptLayer,'📍 Mínir punktar');
+  map.on('popupopen',function(e){
+    var el=e.popup.getElement(); if(!el) return;
+    var ed=el.querySelector('.wpt-edit'), de=el.querySelector('.wpt-del');
+    if(ed) ed.onclick=function(){ map.closePopup(); openWptDialog(ed.dataset.id); };
+    if(de) de.onclick=function(){ if(confirm('Eyða þessum punkti?')){ map.closePopup(); deleteWpt(de.dataset.id); } };
+  });
+  renderWpts();
   /* Skýringar: lítill ⓘ-hnappur sem opnast við snertingu og lokast sjálfur - tekur ekki pláss af kortinu */
   var LegendCtl=L.Control.extend({
     options:{position:'bottomleft'},
@@ -2631,6 +2680,85 @@ var LS_LINES='jk2026_lines';
 var LINE_PALETTE=['#000000','#1a73e8','#e64a19','#43a047','#8e24aa','#fbc02d','#00838f','#c2185b'];
 var customLayers=[]; // { name, color, layer, geojson }
 function nextLineColor(){ return LINE_PALETTE[customLayers.length % LINE_PALETTE.length]; }
+
+/* ---------- Eigin punktar (tekin á GPS-staðsetningu, með heiti og athugasemd) ----------
+   Geymdir í tækinu (localStorage) og sýndir á korti. Í SharePoint-ham er allur punktalisti notandans vistaður
+   sem GeoJSON í Slodar/Punktar_<notandi>.geojson (endurskrifuð við hverja breytingu, biðröð ef ekkert net). */
+var LS_WPT='jk2026_waypoints';
+var wptLayer=null, wptEditing=null;
+function loadWpts(){ return lsJson(LS_WPT,[]); }
+function saveWpts(list){ lsSetJson(LS_WPT,list); updateWptUi(); renderWpts(); syncWpts(); }
+function wptUser(){ return ((msalAccount&&msalAccount.username)||'').split('@')[0].replace(/[^\w.-]+/g,'_')||'notandi'; }
+function updateWptUi(){ var b=document.getElementById('btn-wpt-export'); if(b) b.textContent='⬇ Punktar ('+loadWpts().length+')'; }
+function wptGeoJson(list){
+  return {type:'FeatureCollection',features:(list||loadWpts()).map(function(w){
+    return {type:'Feature',properties:{heiti:w.name,athugasemd:w.comment||'',timi:new Date(w.t).toISOString(),notandi:w.user||'',haed:w.alt==null?null:Math.round(w.alt*10)/10,nakvaemni_m:w.acc==null?null:Math.round(w.acc)},
+            geometry:{type:'Point',coordinates:w.alt==null?[w.lon,w.lat]:[w.lon,w.lat,w.alt]}};
+  })};
+}
+function wptBlob(){ return new Blob([JSON.stringify(wptGeoJson(),null,1)],{type:'application/geo+json'}); }
+/* Auðkenni tækisins í skráarnafni svo tvö tæki sama notanda skrifi ekki yfir punkta hvors annars */
+function wptDeviceId(){
+  var d=''; try{ d=localStorage.getItem('jk2026_device')||''; if(!d){ d=Math.random().toString(36).slice(2,6); localStorage.setItem('jk2026_device',d); } }catch(e){ d='x'; }
+  return d;
+}
+function syncWpts(){
+  try{ localStorage.setItem('jk2026_wpt_dirty','1'); }catch(e){}
+  if(dataMode()!=='sharepoint' || !msalAccount) return;
+  spQueueUpload(SP_TRACK_FOLDER,'Punktar_'+wptUser()+'_'+wptDeviceId()+'.geojson',wptBlob(),'wpts');
+  try{ localStorage.removeItem('jk2026_wpt_dirty'); }catch(e){}
+}
+function renderWpts(){
+  if(!wptLayer) return;
+  wptLayer.clearLayers();
+  loadWpts().forEach(function(w){
+    var m=L.circleMarker([w.lat,w.lon],{pane:'pointsPane',radius:8,color:'#fff',weight:2,fillColor:'#a855f7',fillOpacity:.95});
+    m.bindPopup('<b>'+esc(w.name)+'</b>'+(w.comment?'<br>'+esc(w.comment).replace(/\n/g,'<br>'):'')
+      +'<br><span style="color:#888;font-size:11px">'+esc(new Date(w.t).toLocaleString('is-IS'))+'</span>'
+      +'<br><button type="button" class="wpt-edit" data-id="'+esc(w.id)+'">Breyta</button><button type="button" class="wpt-del" data-id="'+esc(w.id)+'">Eyða</button>');
+    m.bindTooltip(esc(w.name),{permanent:true,direction:'top',offset:[0,-8],className:'pt-label'});
+    m.addTo(wptLayer);
+  });
+}
+function takeWaypoint(){
+  if(!userPos){ toast('GPS-staðsetning ekki þekkt ennþá - bíddu augnablik og reyndu aftur'); return; }
+  var n=loadWpts().length+1;
+  wptEditing={id:'w'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),name:'Punktur '+n,comment:'',
+              lat:userPos.lat,lon:userPos.lon,alt:userPos.alt==null?null:userPos.alt,acc:userPos.acc==null?null:userPos.acc,t:Date.now(),user:wptUser(),isNew:true};
+  showWptDialog();
+}
+function openWptDialog(id){
+  var w=loadWpts().filter(function(x){ return x.id===id; })[0]; if(!w) return;
+  wptEditing=JSON.parse(JSON.stringify(w)); showWptDialog();
+}
+function showWptDialog(){
+  var w=wptEditing;
+  $('#wpt-title').textContent=w.isNew?'Nýr punktur':'Breyta punkti';
+  $('#wpt-pos').textContent=w.lat.toFixed(6)+', '+w.lon.toFixed(6)+(w.acc!=null?' (±'+Math.round(w.acc)+' m)':'')+' · '+new Date(w.t).toLocaleString('is-IS');
+  $('#wpt-name').value=w.name; $('#wpt-comment').value=w.comment||'';
+  document.getElementById('dlg-wpt').showModal();
+  setTimeout(function(){ $('#wpt-name').select(); },50);
+}
+function deleteWpt(id){ saveWpts(loadWpts().filter(function(x){ return x.id!==id; })); toast('Punkti eytt'); }
+$('#wpt-cancel').addEventListener('click',function(){ document.getElementById('dlg-wpt').close(); wptEditing=null; });
+$('#wpt-save').addEventListener('click',function(){
+  var w=wptEditing; if(!w) return;
+  w.name=($('#wpt-name').value||'').trim()||'Punktur'; w.comment=($('#wpt-comment').value||'').trim();
+  var isNew=w.isNew; delete w.isNew;
+  var list=loadWpts();
+  if(isNew) list.push(w); else list=list.map(function(x){ return x.id===w.id ? w : x; });
+  document.getElementById('dlg-wpt').close(); wptEditing=null;
+  saveWpts(list);
+  toast(dataMode()==='sharepoint' && msalAccount ? 'Punktur vistaður ('+w.name+') - fer í SharePoint (Slodar/Punktar_…)' : 'Punktur vistaður í tækinu: '+w.name);
+});
+$('#btn-wpt-take').addEventListener('click',function(){ initMap(); takeWaypoint(); });
+$('#btn-wpt-export').addEventListener('click',function(){
+  var list=loadWpts();
+  if(!list.length){ toast('Engir punktar vistaðir'); return; }
+  var a=document.createElement('a'), u=URL.createObjectURL(wptBlob());
+  a.href=u; a.download='Punktar_'+wptUser()+'_'+wptDeviceId()+'.geojson'; a.click(); setTimeout(function(){ URL.revokeObjectURL(u); },1000);
+});
+updateWptUi();
 
 /* ---------- GPS-slóð (rekja og vista sem shapefile) ---------- */
 var tracking=false, trackPoints=[], trackPolyline=null;
@@ -3155,7 +3283,7 @@ function updateMapLabels(){
 /* ---------- GPS ---------- */
 if('geolocation' in navigator){
   navigator.geolocation.watchPosition(function(pos){
-    userPos={lat:pos.coords.latitude,lon:pos.coords.longitude,alt:pos.coords.altitude};
+    userPos={lat:pos.coords.latitude,lon:pos.coords.longitude,alt:pos.coords.altitude,acc:pos.coords.accuracy};
     if(tracking) trackAddPoint(userPos.lat,userPos.lon);
     if(mapInited){
       if(!userMarker){
