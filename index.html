@@ -97,7 +97,11 @@
   body.map-full #map{position:absolute;inset:0;height:100%!important;min-height:0;border:none;border-radius:0}
   .map-legend{background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:8px;font-size:12px;line-height:1.5;box-shadow:0 1px 4px rgba(0,0,0,.4)}
   .map-legend-btn{display:block;width:30px;height:30px;line-height:30px;text-align:center;font-size:18px;color:var(--text)!important;text-decoration:none}
-  .map-legend-body{padding:6px 10px 8px;max-width:190px;border-top:1px solid var(--line)}
+  .map-legend-body{padding:6px 10px 8px;width:min(260px,calc(100vw - 90px));max-height:55vh;overflow-y:auto;border-top:1px solid var(--line)}
+  .map-legend-layers:not(:empty){margin-top:6px;padding-top:4px;border-top:1px solid var(--line)}
+  .map-legend-layers input[type=color]{width:26px!important;height:26px!important}
+  .map-legend-layers .icon-btn{width:26px!important;height:26px!important;font-size:13px!important}
+  .map-legend-layers input[type=range]{width:80px!important;padding:0}
   .leaflet-popup-content{font-family:var(--sans);font-size:13px;line-height:1.5}
   .leaflet-popup-content button,.leaflet-popup-content a.gm{display:inline-block;background:var(--red);color:#fff !important;border:none;border-radius:6px;padding:6px 10px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;margin-top:4px;margin-right:6px}
   .leaflet-container{font-family:var(--sans)}
@@ -188,8 +192,7 @@
       <div class="panel" id="panel-map">
         <div id="map"></div>
         <button class="btn btn-ghost" id="btn-layers" style="margin-top:10px">⬆ Bæta við lagi (shapefile-zip / GeoJSON)</button>
-        <div class="hint" style="margin-top:6px">Zip þarf að innihalda .shp og .dbf (helst líka .prj). Lagið vistast í tækinu og hægt er að kveikja/slökkva á því í lagavalinu á kortinu.</div>
-        <div id="layer-list"></div>
+        <div class="hint" style="margin-top:6px">Zip þarf að innihalda .shp og .dbf (helst líka .prj). Kveikt/slökkt er á lögum í lagavalinu á kortinu (⧉); litir, gegnsæi og fela lag eru í ⓘ-hnappinum á kortinu.</div>
         <button class="btn btn-ghost" id="btn-track-toggle" style="margin-top:10px">▶ Byrja að rekja GPS-slóð</button>
         <div class="hint" id="track-hint" style="margin-top:6px">Skráir slóðina þína á meðan gengið/ekið er línuna og vistar sem shapefile (.zip) þegar hætt er.</div>
         <div class="row" id="track-clear-row" style="display:none;margin-top:0">
@@ -1687,7 +1690,7 @@ function spFromField(col,v){
 }
 /* note verður að vera "Margar línur" - einnar-línu texti takmarkast við 255 stafi og löng lýsing myndi hafna færslu */
 var SP_EXPECTED_FACETS={ text:['text','note'], note:['note'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
-var APP_BUILD='2026-10-09-d';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
+var APP_BUILD='2026-10-09-e';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
 function spDiagnose(){
   var lines=['Útgáfa appsins: '+APP_BUILD];
   return spLoadColumns(true).then(function(by){
@@ -2572,16 +2575,23 @@ function initMap(){
       var body=L.DomUtil.create('div','map-legend-body',box);
       function dot(c){ return '<span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:'+c+';border:1.5px solid #fff;margin-right:6px;vertical-align:-1px"></span>'; }
       body.innerHTML='<div>'+dot(statusColor('grey'))+'Óskráð</div><div>'+dot(statusColor('amber'))+'Í vinnslu</div><div>'+dot(statusColor('green'))+'Lokið</div>'
-        +'<div style="margin-top:4px;color:var(--muted)">Númer birtast þegar zoomað er inn.</div>';
+        +'<div style="margin-top:4px;color:var(--muted)">Númer birtast þegar zoomað er inn.</div>'
+        +'<div class="map-legend-layers"></div>';
       body.style.display='none';
       var t=null;
-      function setOpen(o){ clearTimeout(t); body.style.display=o?'block':'none'; if(o) t=setTimeout(function(){ setOpen(false); },7000); }
+      // Lokast sjálft eftir smá stund án snertingar; öll snerting í skýringunum (litaval, sleðar) lengir tímann
+      function setOpen(o){ clearTimeout(t); body.style.display=o?'block':'none'; if(o) t=setTimeout(function(){ setOpen(false); },12000); }
+      ['pointerdown','input','change','touchstart','wheel'].forEach(function(ev){
+        body.addEventListener(ev,function(){ if(body.style.display!=='none') setOpen(true); },{passive:true});
+      });
       L.DomEvent.disableClickPropagation(box);
+      L.DomEvent.disableScrollPropagation(box);
       L.DomEvent.on(btn,'click',function(ev){ L.DomEvent.preventDefault(ev); setOpen(body.style.display==='none'); });
       return box;
     }
   });
   new LegendCtl().addTo(map);
+  renderLayerList();
   map.on('zoomend', updateMapLabels);
   mapInited=true;
   loadLineLayers();
@@ -2961,7 +2971,7 @@ function wireUnhide(el){
   });
 }
 function renderLayerList(){
-  var el=$('#layer-list');
+  var el=document.querySelector('.map-legend-layers');      // lagalistinn býr í ⓘ-skýringunum á kortinu
   if(!el) return;
   var nHidden = dataMode()==='sharepoint' ? lsJson(LS_HIDDEN_LAYERS,[]).length : 0;
   var hiddenHtml = nHidden
