@@ -91,6 +91,10 @@
   .done-row span{font-weight:600}
 
   #map{height:calc(100vh - 170px);height:calc(100dvh - 170px);min-height:340px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface)}
+  body.map-full header,body.map-full .seg,body.map-full #panel-list,body.map-full #view-form{display:none!important}
+  body.map-full #panel-map{display:block!important;position:fixed;inset:0;top:0;height:100vh;height:100dvh;z-index:1300;background:var(--bg);padding:0;margin:0;overflow:hidden;order:0}
+  body.map-full #panel-map>*:not(#map){display:none!important}
+  body.map-full #map{position:absolute;inset:0;height:100%!important;min-height:0;border:none;border-radius:0}
   .map-legend{background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:8px;font-size:12px;line-height:1.5;box-shadow:0 1px 4px rgba(0,0,0,.4)}
   .map-legend-btn{display:block;width:30px;height:30px;line-height:30px;text-align:center;font-size:18px;color:var(--text)!important;text-decoration:none}
   .map-legend-body{padding:6px 10px 8px;max-width:190px;border-top:1px solid var(--line)}
@@ -861,6 +865,7 @@ $('#f-done').addEventListener('change', function(){
 /* ---------- Sýnastjórn ---------- */
 function isDesktop(){ return window.matchMedia('(min-width:900px)').matches; }
 function show(view){
+  if(view==='form' && document.body.classList.contains('map-full')) setMapFull(false);
   document.querySelectorAll('.view').forEach(function(v){v.classList.remove('active');});
   $('#view-'+view).classList.add('active');
   document.body.classList.toggle('view-form-active', view==='form');
@@ -1682,7 +1687,7 @@ function spFromField(col,v){
 }
 /* note verður að vera "Margar línur" - einnar-línu texti takmarkast við 255 stafi og löng lýsing myndi hafna færslu */
 var SP_EXPECTED_FACETS={ text:['text','note'], note:['note'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
-var APP_BUILD='2026-10-09-c';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
+var APP_BUILD='2026-10-09-d';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
 function spDiagnose(){
   var lines=['Útgáfa appsins: '+APP_BUILD];
   return spLoadColumns(true).then(function(by){
@@ -2497,6 +2502,14 @@ function showPanel(which){
 }
 var map=null, markerLayer=null, layersControl=null, mapInited=false, userMarker=null, accCircle=null, mapFitted=false;
 var locatePending=false;
+/* Fullskjár: kortið þekur allan skjáinn (CSS - virkar líka á iOS þar sem Fullscreen API vantar) */
+function setMapFull(on){
+  document.body.classList.toggle('map-full',!!on);
+  var b=document.querySelector('.map-full-btn');
+  if(b){ b.title=on?'Loka fullskjá':'Kort á fullan skjá'; b.setAttribute('aria-label',b.title); b.innerHTML=on?'✕':'⛶'; }
+  if(map) setTimeout(function(){ map.invalidateSize(); },60);
+}
+document.addEventListener('keydown',function(e){ if(e.key==='Escape' && document.body.classList.contains('map-full')) setMapFull(false); });
 /* Færir kortið á staðsetningu símans; ef engin staðsetning er komin bíður það eftir fyrstu mælingu */
 function zoomToMe(userAsked){
   if(!mapInited) return;
@@ -2536,6 +2549,19 @@ function initMap(){
     }
   });
   new LocateCtl().addTo(map);
+  var FullCtl=L.Control.extend({
+    options:{position:'topleft'},
+    onAdd:function(){
+      var box=L.DomUtil.create('div','leaflet-bar leaflet-control');
+      var a=L.DomUtil.create('a','map-full-btn',box);
+      a.href='#'; a.title='Kort á fullan skjá'; a.setAttribute('role','button'); a.setAttribute('aria-label','Kort á fullan skjá'); a.innerHTML='⛶';
+      a.style.cssText='font-size:19px;line-height:30px;text-align:center;font-weight:bold';
+      L.DomEvent.disableClickPropagation(box);
+      L.DomEvent.on(a,'click',function(ev){ L.DomEvent.preventDefault(ev); setMapFull(!document.body.classList.contains('map-full')); });
+      return box;
+    }
+  });
+  new FullCtl().addTo(map);
   /* Skýringar: lítill ⓘ-hnappur sem opnast við snertingu og lokast sjálfur - tekur ekki pláss af kortinu */
   var LegendCtl=L.Control.extend({
     options:{position:'bottomleft'},
