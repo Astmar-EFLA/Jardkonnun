@@ -1690,7 +1690,7 @@ function spFromField(col,v){
 }
 /* note verður að vera "Margar línur" - einnar-línu texti takmarkast við 255 stafi og löng lýsing myndi hafna færslu */
 var SP_EXPECTED_FACETS={ text:['text','note'], note:['note'], number:['number','text'], choice:['choice','text'], date:['dateTime','text'], bool:['boolean','choice','text'] };
-var APP_BUILD='2026-10-09-e';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
+var APP_BUILD='2026-10-09-f';   // hækka við hverja breytingu - sést í prófunarskýrslu svo við vitum hvaða kóði keyrir
 function spDiagnose(){
   var lines=['Útgáfa appsins: '+APP_BUILD];
   return spLoadColumns(true).then(function(by){
@@ -1711,7 +1711,17 @@ function spDiagnose(){
     return spListItems();
   }).then(function(items){
     lines.push('Færslur í lista: '+items.length);
-    return lines.join('\n');
+    // Skjalamöppur: hvað appið sér í hverri
+    var folders=[SP_PHOTO_FOLDER,SP_SHP_FOLDER,SP_TRACK_FOLDER,SP_AUDIO_FOLDER];
+    return folders.reduce(function(p,f){
+      return p.then(function(){
+        return spListFolderDeep(f,2).then(function(its){
+          var files=its.filter(function(i){ return i.file; });
+          var shown=files.slice(0,8).map(function(i){ return i.name+(i._path?' ('+i._path+')':''); });
+          lines.push('Mappa "'+f+'": '+files.length+' skrár'+(files.length?' - '+shown.join(', ')+(files.length>8?', …':''):''));
+        }).catch(function(err){ lines.push('Mappa "'+f+'": '+(err.status===404?'finnst ekki':'villa: '+err.message)); });
+      });
+    },Promise.resolve()).then(function(){ return lines.join('\n'); });
   });
 }
 
@@ -2067,6 +2077,24 @@ function spFetchContent(item){
 function spListFolder(folder){
   return spResolveSite().then(function(){ return graphGetAll(spDrivePath(folder)+'/children?$top=200'); });
 }
+/* Skrár í möppu og undirmöppum (allt að depth stig niður); undirmöppuskrár fá _path = slóð undirmöppu */
+function spListFolderDeep(folder,depth){
+  function walk(path,rel,d){
+    return graphGetAll(path+'/children?$top=200').then(function(items){
+      var out=[], chain=Promise.resolve();
+      items.forEach(function(it){
+        if(it.file){ if(rel) it._path=rel; out.push(it); }
+        else if(it.folder && d>0){
+          chain=chain.then(function(){
+            return walk('/sites/'+spSiteId+'/drive/items/'+it.id,(rel?rel+'/':'')+it.name,d-1).then(function(sub){ out=out.concat(sub); }).catch(function(){});
+          });
+        }
+      });
+      return chain.then(function(){ return out; });
+    });
+  }
+  return spResolveSite().then(function(){ return walk(spDrivePath(folder),'',depth); });
+}
 function spDownloadBlob(folder,name){
   return spResolveSite().then(function(){
     return graphFetch(spDrivePath(folder,name)).then(function(r){
@@ -2159,7 +2187,7 @@ function spLoadMapLayers(){
   spLayersLoading=true;
   return msalInitPromise.then(function(){
     if(!msalAccount) return;
-    return spListFolder(SP_SHP_FOLDER).then(function(items){
+    return spListFolderDeep(SP_SHP_FOLDER,2).then(function(items){
       var files=items.filter(function(it){ return it.file && /\.(zip|geojson|json|pdf)$/i.test(it.name); });
       spPrefetchPdfs(files.filter(function(it){ return /\.pdf$/i.test(it.name); }));
       return files.reduce(function(p,it){
@@ -2175,6 +2203,7 @@ function spLoadMapLayers(){
     }).catch(function(err){
       if(err.status===404) return;                               // mappan er ekki til (engin lög)
       console.warn('Gat ekki sótt kortalög - nota vistuð:',err);  // ónettengt: skyndiminni
+      if(navigator.onLine) toast('Gat ekki sótt kortalög úr SharePoint: '+err.message);
       return idbAllFiles().then(function(all){
         return all.filter(function(f){ return f.kind==='layer'; }).reduce(function(p,f){
           return p.then(function(){ return spAddLayers(f.name,f.buf).catch(function(){}); });
